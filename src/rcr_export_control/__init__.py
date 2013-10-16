@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-
 from argparse import ArgumentParser
 from rcr_export_control.utils import bin_search
-from subprocess import Popen
-from subprocess import PIPE
+from rcr_export_control.utils import execute_php_export
+from rcr_export_control.utils import create_article_archive
 from subprocess import CalledProcessError
 
 import os
@@ -47,27 +46,6 @@ parser.add_argument(
 )
 
 
-def execute_php_export(command, articleid):
-    print "PHP Exporting article {0}:\n\t`$ {1}\n`".format(articleid, command)
-    args = command.split()
-    process = Popen(args, stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    pout, perr = process.communicate()
-    code = process.poll()
-    if code or pout or perr:
-        output = pout + perr
-        try:
-            raise CalledProcessError(
-                code, command, output=output
-            )
-        except Exception, e:
-            import pdb; pdb.set_trace( )
-            error = CalledProcessError(code, command)
-            error.output = output
-            raise error
-    print "PHP export of article {0} complete\n".format(articleid)
-    return code
-
-
 def main():
     arguments = parser.parse_args()
     import pdb; pdb.set_trace( )
@@ -97,19 +75,19 @@ def main():
         # export article via command-line exporter
         try:
             execute_php_export(cl, articleid)
-        except CalledProcessError:
-            print "Export of {0} failed due to previous errors\n".format(
-                articleid
+        except CalledProcessError, e:
+            print "Export of {0} failed due to previous errors: {1}\n".format(
+                articleid, e.output
             )
             sys.exit(1)
             return
 
         # read exported xml to build zip archive for this article
         with open(tmp_xml_path, 'r') as fh:
-            exported = fh.read()
+            create_article_archive(output_path, fh)
 
         # cleanup
-        # os.unlink(tmp_xml_path)
+        os.unlink(tmp_xml_path)
 
 
 if __name__ == '__main__':

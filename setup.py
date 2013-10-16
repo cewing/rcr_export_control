@@ -36,6 +36,7 @@ setup(name='rcr_export_control',
           'setuptools',
           # -*- Extra requirements: -*-
           'argparse',
+          'lxml',
       ],
       entry_points="""
       # -*- Entry points: -*-

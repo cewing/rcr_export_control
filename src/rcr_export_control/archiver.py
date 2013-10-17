@@ -1,0 +1,192 @@
+# -*- coding: utf-8 -*-
+from bs4 import element
+from lxml import etree
+from rcr_export_control.xml_tools import convert_tag_type
+from rcr_export_control.xml_tools import get_archive_id
+from rcr_export_control.xml_tools import get_archive_content_base_id
+from rcr_export_control.xml_tools import parse_article_html
+from rcr_export_control.xml_tools import set_sec_type
+
+import os
+import zipfile
+
+class JATSArchiver(object):
+    """handles converting PHP exported JATS to PMC compliant zip archive"""
+    
+    parsed_xml = None
+    galley_files = []
+    supplemental_files = []
+    converted = False
+    out_path = None
+    compression = zipfile.ZIP_STORED
+
+
+    def __init__(self, parsed, out_path):
+        self.parsed_xml = parsed
+        self.out_path = out_path
+        try:
+            import zlib
+            self.compression = zipfile.ZIP_DEFLATED
+        except:
+            pass
+
+    @property
+    def raw(self):
+        if not hasattr(self, '_raw'):
+            keys = ('markup', 'galleys', 'supplemental_files')
+            self._raw = dict(zip(keys, self._exerpt_body_content()))
+        return self._raw
+
+
+    @property
+    def cooked(self):
+        return (self.galley_files, self.supplemental_files)
+
+    # Public API
+
+    def convert(self):
+        """iteratively build body sections"""
+        body = self.parsed_xml.find('body')
+        if 'markup' in self.raw:
+            if self.raw['markup'] is None:
+                raise ValueError('exported xml has no page markup')
+
+            html = parse_article_html(self.raw['markup'])
+
+            header_tags = html.find_all('p', class_='subheading')
+            # XXX this should be logging to an output stream
+            print "building {0} sections".format(len(header_tags))
+
+            for header_tag in header_tags:
+                heading = header_tag.text
+                sec_node = None
+                if heading not in ['Abstract', 'References']:
+                    # XXX this should be logging to an output stream
+                    print "building section from {0}\n\n".format(header_tag)
+                    # dump abstract, it's elsewhere
+                    # handle references separately
+                    sec_node = etree.SubElement(body, 'sec')
+                    sec_node.tail = "\n"
+                    set_sec_type(sec_node, heading)
+                    sec_title = etree.SubElement(sec_node, 'title')
+                    sec_title.tail = "\n"
+                    sec_title.text = heading
+                    self._build_section(sec_node, header_tag)
+
+        self.converted = True
+
+
+    def archive(self):
+        """write the results of conversion out to a zip file archive"""
+        if not self.converted:
+            raise RuntimeError('must call archiver.convert() before archiving')
+        base_filename = get_archive_id(self.parsed_xml)
+        inner_basename = get_archive_content_base_id(base_filename)
+        archive_name = base_filename + '.zip'
+        archive_path = os.path.join(self.out_path, archive_name)
+        archive = zipfile.ZipFile(
+            archive_path, 'w', compression=self.compression
+        )
+        xml_filename = inner_basename + '.xml'
+        archive.writestr(
+            xml_filename, etree.tostring(
+                self.parsed_xml,
+                encoding='utf-8',
+                xml_declaration=True,
+                pretty_print=True
+            )
+        )
+        archive.close()
+
+    # Private API
+
+    def _exerpt_body_content(self):
+        """remove child nodes of the exported XML body tag for processing"""
+        root = self.parsed_xml.getroot()
+        body = root.find('body')
+        results = []
+        for lookfor in ['article-markup', 'galley-files', 'supplemental-files']:
+            node = body.find(lookfor)
+            if node is not None:
+                body.remove(node)
+            results.append(node)
+        return results
+
+
+    def _build_section(self, sec_node, header_tag):
+        """walk the siblings after the section heading and insert p's"""
+        for tag in header_tag.next_siblings:
+            if isinstance(tag, element.Tag):
+                print "investigating tag: {0}\n\n".format(tag)
+                if 'class' in tag.attrs:
+                    comp = map(str.lower, tag['class'])
+                    if 'subheading' in comp:
+                        # stop when we reach the next subheading
+                        print "breaking loop on new subheading: {0}\n\n".format(tag)
+                        break
+                    elif 'figure' in comp:
+                        # treat figures specially, for now, skip em
+                        print "skipping figure element: {0}\n\n".format(tag)
+                        continue
+                else:
+                    if tag.name == 'p':
+                        print 'adding paragraph {0} to section\n\n'.format(tag)
+                        # import pdb; pdb.set_trace( )
+                        p_node = etree.SubElement(sec_node, 'p')
+                        self._process_paragraph(p_node, tag)
+                        p_node.tail = "\n"
+
+            elif isinstance(tag, element.NavigableString):
+                # XXX Log navigable strings with non-whitespace in case we're
+                #     missing something important
+                pass
+
+
+    def _process_paragraph(self, p_node, p_tag):
+        """iteratively process the children of an HTML paragraph tag"""
+        tailable = None
+
+        for tag in p_tag.children:
+            if isinstance(tag, element.NavigableString):
+                insert = unicode(tag.string)
+                # XXX: process inline references to bibliography and 
+                #      figures here?
+                if tailable is None:
+                    p_node.text = insert
+                else:
+                    tailable.tail = insert
+                    tailable = None
+            elif isinstance(tag, element.Tag):
+                if tag.name.lower() == 'a':
+                    tailable = self._process_link(p_node, tag)
+                else:
+                    tailable = self._insert_tag(p_node, tag)
+
+
+    def _insert_tag(self, node, tag):
+        """insert a subnode based on node"""
+        subnode_type = convert_tag_type(tag)
+        subnode = etree.SubElement(node, subnode_type)
+        subnode.tail = "\n"
+        tailable = None
+
+        for child in tag.children:
+            if isinstance(child, element.NavigableString):
+                insert = unicode(child.string)
+                # XXX: process inline references to bibliography and 
+                #      figures here?
+                if tailable is None:
+                    subnode.text = insert
+                else:
+                    tailable.tail = insert
+                    tailable = None
+            elif isinstance(child, element.Tag):
+                tailable = self._insert_tag(subnode, child)
+
+        return subnode
+
+
+    def _process_link(self, node, tag):
+        """convert html links into cross-reference tags for JATS"""
+        # XXX: Fix This to do the right thing
+        return self._insert_tag(node, tag)

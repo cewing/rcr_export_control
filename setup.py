@@ -4,7 +4,7 @@ import os
 version = '1.0'
 
 long_description = (
-    open('README.txt').read()
+    open('README.rst').read()
     + '\n' +
     'Contributors\n'
     '============\n'
@@ -37,6 +37,7 @@ setup(name='rcr_export_control',
           # -*- Extra requirements: -*-
           'argparse',
           'lxml',
+          'beautifulsoup4',
       ],
       entry_points="""
       # -*- Entry points: -*-

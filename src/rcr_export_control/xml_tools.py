@@ -1,14 +1,29 @@
 # -*- coding: utf-8 -*-
+from bs4 import BeautifulSoup
 from lxml import etree
-
+from rcr_export_control import constants
 
 def parse_export_xml(exported):
+    """parse the xml exported by the PHP JATS exporter plugin"""
     parser = etree.XMLParser(encoding='utf-8')
     parsed = etree.parse(exported, parser)
     return parsed
 
 
-def get_base_file_id(parsed):
+def parse_article_html(html_node):
+    """parse the html contained in an article node
+
+    use beautiful soup because it will try to normalize the messy html we
+    are likely to see.
+    """
+    if html_node is None:
+        return
+
+    parsed = BeautifulSoup(html_node.text)
+    return parsed
+
+
+def get_archive_id(parsed):
     """construct a base identifier string for article and files
 
     id is in the format jour-vol-articleid
@@ -26,21 +41,10 @@ def get_base_file_id(parsed):
         return "{jour}-{vol}-{iss}-{aid}".format(**ids)
 
 
-def convert_file_id_to_article_id(file_id):
+def get_archive_content_base_id(file_id):
+    """article xml and internal ids have a different base id format than archives"""
     parts = file_id.split('-')
     return "{0}-{1}-{3}".format(*parts)
-
-
-def exerpt_body_content(parsed):
-    root = parsed.getroot()
-    body = root.find('body')
-    results = []
-    for lookfor in ['article-markup', 'galley-files', 'supplemental-files']:
-        node = body.find(lookfor)
-        if node is not None:
-            body.remove(node)
-        results.append(node)
-    return results
 
 
 def filenode_to_dict(node):
@@ -74,13 +78,36 @@ def convert_galley(galley_node):
 
 def convert_galleys(gal_node):
     galleys = []
-    for galley in gal_node:
-        galleys.append(convert_galley(galley))
+    if gal_node is not None:
+        for galley in gal_node:
+            galleys.append(convert_galley(galley))
     return galleys
 
 
 def convert_supplemental_files(supp_node):
     files = []
-    for node in supp_node:
-        files.append(filenode_to_dict(node))
+    if supp_node is not None:
+        for node in supp_node:
+            files.append(filenode_to_dict(node))
     return files
+
+
+def set_sec_type(sec, heading):
+    """set the 'sec_type' attribute of 'sec', if applicable"""
+    comp = heading.lower()
+    sec_type = None
+    if comp in constants.JATS_SEC_TYPES:
+        sec_type = comp
+    if comp in constants.RCR_TO_JATS_SEC_MAPPING:
+        sec_type = constants.RCR_TO_JATS_SEC_MAPPING[comp]
+
+    if sec_type:
+        sec.set('sec-type', sec_type)
+
+
+def convert_tag_type(tag):
+    """convert html tag types to JATS xml compliant tag types"""
+    if tag.name in constants.HTML_TO_JATS_MAPPING:
+        return constants.HTML_TO_JATS_MAPPING[tag.name]
+    else:
+        return tag.name

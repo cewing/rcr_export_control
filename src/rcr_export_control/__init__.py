@@ -48,7 +48,6 @@ parser.add_argument(
 
 def main():
     arguments = parser.parse_args()
-    import pdb; pdb.set_trace( )
 
     # default to first found on path
     executable = arguments.php

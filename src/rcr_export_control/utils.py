@@ -1,24 +1,12 @@
 # -*- coding: utf-8 -*-
-from lxml import etree
+from rcr_export_control.archiver import JATSArchiver
 from rcr_export_control.xml_tools import parse_export_xml
-from rcr_export_control.xml_tools import exerpt_body_content
-from rcr_export_control.xml_tools import get_base_file_id
-from rcr_export_control.xml_tools import convert_file_id_to_article_id
-from rcr_export_control.xml_tools import convert_galleys
-from rcr_export_control.xml_tools import convert_supplemental_files
 from subprocess import Popen
 from subprocess import PIPE
 from subprocess import CalledProcessError
 
 import os
 import sys
-import zipfile
-
-try:
-    import zlib
-    compression = zipfile.ZIP_DEFLATED
-except:
-    compression = zipfile.ZIP_STORED
 
 
 class MissingBinary(Exception): 
@@ -115,24 +103,10 @@ def execute_php_export(command, articleid):
 
 
 def create_article_archive(out_path, exported):
-    import pdb; pdb.set_trace( )
     parsed = parse_export_xml(exported)
-    base_filename = get_base_file_id(parsed)
-    inner_basename = convert_file_id_to_article_id(base_filename)
-    markup_node, galleys_node, supplemental_node = exerpt_body_content(parsed)
-    galleys = []
-    supp_files = []
-    if galleys_node is not None:
-        galleys = convert_galleys(galleys_node)
-    if supplemental_node is not None:
-        supp_files = convert_supplemental_files(supplemental_node)
-    archive_name = base_filename + '.zip'
-    archive_path = os.path.join(out_path, archive_name)
-    archive = zipfile.ZipFile(archive_path, 'w', compression=compression)
-    xml_filename = inner_basename + '.xml'
-    archive.writestr(
-        xml_filename, etree.tostring(
-            parsed, encoding='utf-8', xml_declaration=True
-        )
-    )
-    archive.close()
+    archiver = JATSArchiver(parsed, out_path)
+    archiver.convert()
+    archiver.archive()
+    
+    # clean up memory space:
+    del archiver

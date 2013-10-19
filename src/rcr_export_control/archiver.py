@@ -1,24 +1,37 @@
 # -*- coding: utf-8 -*-
 from bs4 import element
+from copy import deepcopy
 from lxml import etree
 from rcr_export_control.xml_tools import convert_tag_type
+from rcr_export_control.xml_tools import extract_reference_pmids
 from rcr_export_control.xml_tools import get_archive_id
 from rcr_export_control.xml_tools import get_archive_content_base_id
 from rcr_export_control.xml_tools import parse_article_html
 from rcr_export_control.xml_tools import set_sec_type
 
 import os
+import requests
 import zipfile
+
+
+HOME = os.path.dirname(__file__)
+
 
 class JATSArchiver(object):
     """handles converting PHP exported JATS to PMC compliant zip archive"""
     
     parsed_xml = None
+    out_path = None
+    reference_list = None
+    converted = False
     galley_files = []
     supplemental_files = []
-    converted = False
-    out_path = None
     compression = zipfile.ZIP_STORED
+    pubmed_base_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+    base_query = {
+        'db': 'pubmed',
+        'version': '2.0',
+    }
 
 
     def __init__(self, parsed, out_path):
@@ -42,6 +55,14 @@ class JATSArchiver(object):
     def cooked(self):
         return (self.galley_files, self.supplemental_files)
 
+    @property
+    def transform(self):
+        if not hasattr(self, '_transform'):
+            transform_path = os.path.join(HOME, 'pubmed_jats_transform.xsl')
+            with open(transform_path) as fh:
+                self._transform = etree.XSLT(etree.XML(fh.read()))
+        return self._transform
+
     # Public API
 
     def convert(self):
@@ -50,8 +71,9 @@ class JATSArchiver(object):
         if 'markup' in self.raw:
             if self.raw['markup'] is None:
                 raise ValueError('exported xml has no page markup')
-
             html = parse_article_html(self.raw['markup'])
+            ref_ids = extract_reference_pmids(html)
+            self._handle_references(ref_ids)
 
             header_tags = html.find_all('p', class_='subheading')
             # XXX this should be logging to an output stream
@@ -72,6 +94,8 @@ class JATSArchiver(object):
                     sec_title.tail = "\n"
                     sec_title.text = heading
                     self._build_section(sec_node, header_tag)
+
+            self._append_back_matter()
 
         self.converted = True
 
@@ -190,3 +214,33 @@ class JATSArchiver(object):
         """convert html links into cross-reference tags for JATS"""
         # XXX: Fix This to do the right thing
         return self._insert_tag(node, tag)
+
+
+    def _handle_references(self, ids):
+        """build reference tree from a list of pubmed ids
+
+        The tree is built by querying the PubMed esummary eutil for docsummary
+        xml. This is then transformed through xslt into a JATS-compliant ref-list
+        element and that element is returned.
+        """
+        print "Looking up {0} references".format(len(ids))
+        query = {'id': ','.join(ids)}
+        query.update(self.base_query)
+        resp = requests.get(self.pubmed_base_url, params=query)
+        import pdb; pdb.set_trace( )
+        if resp.ok:
+            import pdb; pdb.set_trace( )
+            # must pass a byte-string to the parser
+            source = etree.XML(resp.content)
+            self.reference_list = self.transform(source)
+            print "References parsed"
+        else:
+            print "Reference Lookup Failed"
+            raise IOError
+
+    def _append_back_matter(self):
+        import pdb; pdb.set_trace( )
+        if self.reference_list is not None:
+            back = etree.SubElement(self.parsed_xml.getroot(), 'back')
+            ref_list = deepcopy(self.reference_list).getroot()
+            back.append(ref_list)

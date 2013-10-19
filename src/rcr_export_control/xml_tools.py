@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 from bs4 import BeautifulSoup
+from bs4 import element
 from lxml import etree
 from rcr_export_control import constants
+from urlparse import urlparse
+from urlparse import parse_qs
 
 def parse_export_xml(exported):
     """parse the xml exported by the PHP JATS exporter plugin"""
@@ -111,3 +114,47 @@ def convert_tag_type(tag):
         return constants.HTML_TO_JATS_MAPPING[tag.name]
     else:
         return tag.name
+
+
+def extract_reference_pmids(html):
+    """given a reference header, find the reference paragraph and get pmids
+    
+    HTML input should look something like this:
+    <p class="subheading">References</p> <-- this is the incoming tag
+    <p class="references">
+    1. Barrett NR. Report of a case of spontaneous perforation of the oesophagus successfully treated by operation.
+    <em>
+     Br J Surg
+    </em>
+    . 1947 Oct;35(138):216-8. [
+    <a href="http://www.ncbi.nlm.nih.gov/entrez/query.fcgi?cmd=Retrieve&amp;db=pubmed&amp;dopt=Abstract&amp;list_uids=20271775&amp;query_hl=9&amp;itool=pubmed_docsum" target="_blank">
+     PubMed
+    </a>
+    ]
+    <br/>
+    <br/>
+    2. de Schipper JP, Pull ter Gunne AF, Oostvogel HJM, van Laarhoven CJHM. Spontaneous rupture of the oesophagus: Boerhaave’s syndrome in 2008.
+    <em>
+     Dig Surg
+    </em>
+    2009;26:1-6. [
+    <a href="http://www.ncbi.nlm.nih.gov/entrez/query.fcgi?cmd=Retrieve&amp;db=pubmed&amp;dopt=Abstract&amp;list_uids=19145081&amp;query_hl=9&amp;itool=pubmed_docsum" target="_blank">
+     PubMed
+    </a>
+    ]
+    <br/>
+    <br/>
+    """
+    pmids = []
+    ref_graph = html.find('p', class_='references')
+    # this is our references paragraph, use it
+    links = ref_graph.find_all('a')
+    for link in links:
+        url = link.get('href')
+        if url is not None:
+            query = urlparse(url).query
+            if query:
+                qdict = parse_qs(query)
+                if 'list_uids' in qdict:
+                    pmids.extend(qdict['list_uids'])
+    return pmids

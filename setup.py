@@ -38,6 +38,7 @@ setup(name='rcr_export_control',
           'argparse',
           'lxml',
           'beautifulsoup4',
+          'requests',
       ],
       entry_points="""
       # -*- Entry points: -*-

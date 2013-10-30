@@ -158,3 +158,12 @@ def extract_reference_pmids(html):
                 if 'list_uids' in qdict:
                     pmids.extend(qdict['list_uids'])
     return pmids
+
+
+def set_namespaced_attribute(node, a_name, a_value, prefix=None):
+    try:
+        ns = '{{{0}}}'.format(constants.JATS_NSMAP[prefix])
+    except KeyError:
+        ns = ''
+    tmpl = '{ns}{name}'
+    node.attrib[tmpl.format(ns=ns, name=a_name)] = a_value

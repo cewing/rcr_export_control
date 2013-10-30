@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+JATS_NSMAP = {
+    'xlink': 'http://www.w3.org/1999/xlink'
+}
+
 JATS_INLINE_ELEMENTS = [
     "email",
     "ext-link",
@@ -66,6 +70,7 @@ HTML_TO_JATS_MAPPING = {
     'i': 'italic',
     'em': 'italic',
     'b': 'bold',
+    'img': 'graphic',
 }
 
 

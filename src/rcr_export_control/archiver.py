@@ -8,6 +8,7 @@ from rcr_export_control.xml_tools import get_archive_id
 from rcr_export_control.xml_tools import get_archive_content_base_id
 from rcr_export_control.xml_tools import parse_article_html
 from rcr_export_control.xml_tools import set_sec_type
+from rcr_export_control.xml_tools import set_namespaced_attribute
 
 import os
 import requests
@@ -22,8 +23,9 @@ class JATSArchiver(object):
     
     parsed_xml = None
     out_path = None
-    reference_list = None
+    reference_tree = None
     converted = False
+    figure_list = []
     galley_files = []
     supplemental_files = []
     compression = zipfile.ZIP_STORED
@@ -149,11 +151,19 @@ class JATSArchiver(object):
                         print "breaking loop on new subheading: {0}\n\n".format(tag)
                         break
                     elif 'figure' in comp:
-                        # treat figures specially, for now, skip em
-                        print "skipping figure element: {0}\n\n".format(tag)
-                        continue
+                        # this is a figure.  Deal with it.
+                        f_node = etree.SubElement(sec_node, 'fig')
+                        self._process_figure(f_node, tag)
                 else:
                     if tag.name == 'p':
+                        # if the article has yet to be converted to using the
+                        # 'figure' class on figure paragraphs, try to catch
+                        # figures anyway.
+                        if tag.find('span', class_="figureCaption") is not None:
+                            # this is a figure.  Deal with it.
+                            f_node = etree.SubElement(sec_node, 'fig')
+                            self._process_figure(f_node, tag)
+                            
                         print 'adding paragraph {0} to section\n\n'.format(tag)
                         # import pdb; pdb.set_trace( )
                         p_node = etree.SubElement(sec_node, 'p')
@@ -185,6 +195,23 @@ class JATSArchiver(object):
                     tailable = self._process_link(p_node, tag)
                 else:
                     tailable = self._insert_tag(p_node, tag)
+
+    def _process_figure(self, f_node, f_tag):
+        self.figure_list.append(f_node)
+        self._set_figure_id(f_node)
+        for caption_tag in f_tag.find_all('span', class_='figureCaption'):
+            caption_tag.name = 'p'
+            caption_node = etree.SubElement(f_node, 'caption')
+            caption_p = etree.SubElement(caption_node, 'p')
+            self._process_paragraph(caption_p, caption_tag)
+            caption_node.tail = "\n"
+        for img_tag in f_tag.find_all('img'):
+            graphic_node = self._insert_tag(f_node, img_tag)
+            set_namespaced_attribute(
+                graphic_node, 'href', img_tag['src'], prefix='xlink'
+            )
+            graphic_node.tail = "\n"
+        f_node.tail = "\n"
 
 
     def _insert_tag(self, node, tag):
@@ -227,20 +254,21 @@ class JATSArchiver(object):
         query = {'id': ','.join(ids)}
         query.update(self.base_query)
         resp = requests.get(self.pubmed_base_url, params=query)
-        import pdb; pdb.set_trace( )
         if resp.ok:
-            import pdb; pdb.set_trace( )
             # must pass a byte-string to the parser
             source = etree.XML(resp.content)
-            self.reference_list = self.transform(source)
+            self.reference_tree = self.transform(source)
             print "References parsed"
         else:
             print "Reference Lookup Failed"
             raise IOError
 
     def _append_back_matter(self):
-        import pdb; pdb.set_trace( )
-        if self.reference_list is not None:
+        if self.reference_tree is not None:
             back = etree.SubElement(self.parsed_xml.getroot(), 'back')
-            ref_list = deepcopy(self.reference_list).getroot()
+            ref_list = deepcopy(self.reference_tree).getroot()
             back.append(ref_list)
+
+    def _set_figure_id(self, f_node):
+        tmpl = 'fig-{0}'
+        f_node.attrib['id'] = tmpl.format(self.figure_list.index(f_node) + 1)

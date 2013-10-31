@@ -6,6 +6,9 @@ from rcr_export_control import constants
 from urlparse import urlparse
 from urlparse import parse_qs
 
+import mimetypes
+import os
+
 def parse_export_xml(exported):
     """parse the xml exported by the PHP JATS exporter plugin"""
     parser = etree.XMLParser(encoding='utf-8')
@@ -57,6 +60,11 @@ def filenode_to_dict(node):
     return node_dict
 
 
+def store_item_by_key(storage, item, key):
+    holder = storage.setdefault(item[key], [])
+    holder.append(item)
+
+
 def convert_galley(galley_node):
     galley = {'id': galley_node.attrib['galley-id']}
     if 'html' in galley_node.tag.lower():
@@ -64,15 +72,17 @@ def convert_galley(galley_node):
     else:
         galley['type'] = galley_node.find('label').text.lower()
 
-    files = []
+    files = {}
     for node in galley_node.findall('file'):
-        files.append(filenode_to_dict(node))
+        converted = filenode_to_dict(node)
+        store_item_by_key(files, converted, 'filename')
     if files:
         galley['files'] = files
 
-    images = []
+    images = {}
     for node in galley_node.findall('image'):
-        images.append(filenode_to_dict(node))
+        converted = filenode_to_dict(node)
+        store_item_by_key(images, converted, 'filename')
     if images:
         galley['images'] = images
 
@@ -80,18 +90,20 @@ def convert_galley(galley_node):
 
 
 def convert_galleys(gal_node):
-    galleys = []
+    galleys = {}
     if gal_node is not None:
         for galley in gal_node:
-            galleys.append(convert_galley(galley))
+            converted = convert_galley(galley)
+            store_item_by_key(galleys, converted, 'type')
     return galleys
 
 
 def convert_supplemental_files(supp_node):
-    files = []
+    files = {}
     if supp_node is not None:
         for node in supp_node:
-            files.append(filenode_to_dict(node))
+            converted = filenode_to_dict(node)
+            store_item_by_key(files, converted, 'filename')
     return files
 
 
@@ -167,3 +179,41 @@ def set_namespaced_attribute(node, a_name, a_value, prefix=None):
         ns = ''
     tmpl = '{ns}{name}'
     node.attrib[tmpl.format(ns=ns, name=a_name)] = a_value
+
+
+def get_namespaced_attribute(node, a_name, prefix=None, default=None):
+    try:
+        ns = '{{{0}}}'.format(constants.JATS_NSMAP[prefix])
+    except KeyError:
+        ns = ''
+    key = '{ns}{name}'.format(ns=ns, name=a_name)
+    return node.attrib.get(key, default)
+    
+
+
+def is_internal(href):
+    """determine if an href is internal to RCR"""
+    # if an absolute local link, or relative local link
+    if href.startswith('/') or not href.startswith('http'):
+        return True
+
+    # if an RCR domain is in the link
+    for domain in constants.RCR_DOMAINS:
+        if domain in href:
+            return True
+
+    return False
+
+
+def is_media_url(href):
+    mime = mimetypes.guess_type(os.path.basename(href))
+    if mime[0] is None:
+        # in rcr, this is urls like 
+        # http://radiology.casereports.net/index.php/rcr/article/view/433/1117
+        return False
+
+    prefix = mime[0].split('/')
+    if prefix in constants.MEDIA_MIME_TYPE_PREFIXES:
+        return True
+
+    return False

@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
+from rcr_export_control import constants
 from rcr_export_control.archiver import JATSArchiver
 from rcr_export_control.xml_tools import parse_export_xml
 from subprocess import Popen
 from subprocess import PIPE
 from subprocess import CalledProcessError
 
+import mimetypes
 import os
 import sys
 

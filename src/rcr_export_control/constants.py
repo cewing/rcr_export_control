@@ -71,6 +71,7 @@ HTML_TO_JATS_MAPPING = {
     'em': 'italic',
     'b': 'bold',
     'img': 'graphic',
+    'a': 'uri',
 }
 
 
@@ -103,3 +104,18 @@ RCR_TO_JATS_SEC_MAPPING = {
     'supplementary materials': 'supplementary-material',
     'methods and materials': 'methods|materials',
 }
+
+
+RCR_DOMAINS = [
+    'radiology.casereports.net',
+]
+
+
+MEDIA_MIME_TYPE_PREFIXES = [
+    'x-conference',
+    'image',
+    'application',
+    'video',
+    'model',
+    'audio',
+]

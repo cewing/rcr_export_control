@@ -3,12 +3,17 @@ from bs4 import element
 from copy import deepcopy
 from lxml import etree
 from rcr_export_control.xml_tools import convert_tag_type
+from rcr_export_control.xml_tools import convert_galleys
+from rcr_export_control.xml_tools import convert_supplemental_files
 from rcr_export_control.xml_tools import extract_reference_pmids
-from rcr_export_control.xml_tools import get_archive_id
 from rcr_export_control.xml_tools import get_archive_content_base_id
+from rcr_export_control.xml_tools import get_archive_id
+from rcr_export_control.xml_tools import get_namespaced_attribute
+from rcr_export_control.xml_tools import is_internal
+from rcr_export_control.xml_tools import is_media_url
 from rcr_export_control.xml_tools import parse_article_html
-from rcr_export_control.xml_tools import set_sec_type
 from rcr_export_control.xml_tools import set_namespaced_attribute
+from rcr_export_control.xml_tools import set_sec_type
 
 import os
 import requests
@@ -24,10 +29,16 @@ class JATSArchiver(object):
     parsed_xml = None
     out_path = None
     reference_tree = None
+    current_figure_node = None
+    base_filename = None
+    inner_basename = None
+    current_figure_images = []
     converted = False
+    skip_next_paragraph = False
     figure_list = []
-    galley_files = []
-    supplemental_files = []
+    galley_storage = {}
+    supplemental_storage = {}
+    files_to_archive = {}
     compression = zipfile.ZIP_STORED
     pubmed_base_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
     base_query = {
@@ -39,6 +50,8 @@ class JATSArchiver(object):
     def __init__(self, parsed, out_path):
         self.parsed_xml = parsed
         self.out_path = out_path
+        self.base_filename = get_archive_id(self.parsed_xml)
+        self.inner_basename = get_archive_content_base_id(self.base_filename)
         try:
             import zlib
             self.compression = zipfile.ZIP_DEFLATED
@@ -55,7 +68,12 @@ class JATSArchiver(object):
 
     @property
     def cooked(self):
-        return (self.galley_files, self.supplemental_files)
+        cooked = {
+            'xml': self.parsed_xml,
+            'galleys': self.galley_files,
+            'supplemental': self.supplemental_files,
+        }
+        return cooked
 
     @property
     def transform(self):
@@ -69,6 +87,8 @@ class JATSArchiver(object):
 
     def convert(self):
         """iteratively build body sections"""
+        # then, parse the exported HTML body of the document and transform it
+        # to JATS XML
         body = self.parsed_xml.find('body')
         if 'markup' in self.raw:
             if self.raw['markup'] is None:
@@ -97,7 +117,12 @@ class JATSArchiver(object):
                     sec_title.text = heading
                     self._build_section(sec_node, header_tag)
 
+            # append references and other back matter to the JATS document
             self._append_back_matter()
+
+            # finally, resolve internal cross-references 
+            # (refs, media and figures)
+            self._handle_crosslinks()
 
         self.converted = True
 
@@ -106,14 +131,12 @@ class JATSArchiver(object):
         """write the results of conversion out to a zip file archive"""
         if not self.converted:
             raise RuntimeError('must call archiver.convert() before archiving')
-        base_filename = get_archive_id(self.parsed_xml)
-        inner_basename = get_archive_content_base_id(base_filename)
-        archive_name = base_filename + '.zip'
+        archive_name = self.base_filename + '.zip'
         archive_path = os.path.join(self.out_path, archive_name)
         archive = zipfile.ZipFile(
             archive_path, 'w', compression=self.compression
         )
-        xml_filename = inner_basename + '.xml'
+        xml_filename = self.inner_basename + '.xml'
         archive.writestr(
             xml_filename, etree.tostring(
                 self.parsed_xml,
@@ -122,6 +145,12 @@ class JATSArchiver(object):
                 pretty_print=True
             )
         )
+        # archive any additional files set up during processing, these should
+        # be stored in a dict with the archive name as the key and the 
+        # filesystem path as the stored value
+        for name, path in self.files_to_archive.items():
+            import pdb; pdb.set_trace( )
+            archive.write(path, name, self.compression)
         archive.close()
 
     # Private API
@@ -143,7 +172,12 @@ class JATSArchiver(object):
         """walk the siblings after the section heading and insert p's"""
         for tag in header_tag.next_siblings:
             if isinstance(tag, element.Tag):
-                print "investigating tag: {0}\n\n".format(tag)
+                # allow sub-processes to short-circuit the paragraph that 
+                # follows them (helps in processing badly formatted figures)
+                if self.skip_next_paragraph and tag.name == 'p':
+                    self.skip_next_paragraph = False
+                    continue
+                # print "investigating tag: {0}\n\n".format(tag)
                 if 'class' in tag.attrs:
                     comp = map(str.lower, tag['class'])
                     if 'subheading' in comp:
@@ -159,16 +193,20 @@ class JATSArchiver(object):
                         # if the article has yet to be converted to using the
                         # 'figure' class on figure paragraphs, try to catch
                         # figures anyway.
-                        if tag.find('span', class_="figureCaption") is not None:
+                        if tag.find(class_="figureCaption") is not None or tag.find('img') is not None:
+                            print "found a figure by other means: {0}\n\n".format(tag)
                             # this is a figure.  Deal with it.
-                            f_node = etree.SubElement(sec_node, 'fig')
-                            self._process_figure(f_node, tag)
-                            
-                        print 'adding paragraph {0} to section\n\n'.format(tag)
-                        # import pdb; pdb.set_trace( )
-                        p_node = etree.SubElement(sec_node, 'p')
-                        self._process_paragraph(p_node, tag)
-                        p_node.tail = "\n"
+                            if self.current_figure_node is None:
+                                self.current_figure_node = etree.SubElement(
+                                    sec_node, 'fig'
+                                )
+                            self._process_malformed_figure(tag)
+                        else:
+                            print 'adding paragraph {0} to section\n\n'.format(tag)
+                            # import pdb; pdb.set_trace( )
+                            p_node = etree.SubElement(sec_node, 'p')
+                            self._process_paragraph(p_node, tag)
+                            p_node.tail = "\n"
 
             elif isinstance(tag, element.NavigableString):
                 # XXX Log navigable strings with non-whitespace in case we're
@@ -197,6 +235,7 @@ class JATSArchiver(object):
                     tailable = self._insert_tag(p_node, tag)
 
     def _process_figure(self, f_node, f_tag):
+        """figures must be processed out properly"""
         self.figure_list.append(f_node)
         self._set_figure_id(f_node)
         for caption_tag in f_tag.find_all('span', class_='figureCaption'):
@@ -213,6 +252,47 @@ class JATSArchiver(object):
             graphic_node.tail = "\n"
         f_node.tail = "\n"
 
+
+    def _process_malformed_figure(self, f_tag):
+        """handle figures that are spread among several concurrent paragraphs"""
+        f_node = self.current_figure_node
+        if f_node not in self.figure_list:
+            self.figure_list.append(f_node)
+            self._set_figure_id(f_node)
+        figure_images = f_tag.find_all('img')
+        if len(figure_images) > 0:
+            # this node contains images, store them and move on
+            self.current_figure_images.extend(figure_images)
+        elif self.current_figure_images and\
+            f_tag.find(class_='figureCaption') is not None:
+            # this node is the caption, time to process it all
+            for caption_tag in f_tag.find_all('span', class_='figureCaption'):
+                caption_tag.name = 'p'
+                caption_node = etree.SubElement(f_node, 'caption')
+                caption_p = etree.SubElement(caption_node, 'p')
+                self._process_paragraph(caption_p, caption_tag)
+                caption_node.tail = "\n"
+            for img_tag in self.current_figure_images:
+                graphic_node = self._insert_tag(f_node, img_tag)
+                set_namespaced_attribute(
+                    graphic_node, 'href', img_tag['src'], prefix='xlink'
+                )
+                graphic_node.tail = "\n"
+            f_node.tail = "\n"
+            # empty out the buffers we've stored for processing this figure
+            self._clear_stored_figure()
+        else:
+            msg = "there has been a problem processing the figure associated"
+            msg += "with this tag:\n{0}\nPlease check your article html."
+            print msg.format(f_tag)
+            # empty out the buffers we've stored for processing this figure
+            self._clear_stored_figure()
+
+
+    def _clear_stored_figure(self):
+        """clear the storage used for iteratively processing figures"""
+        self.current_figure_node = None
+        self.current_figure_images = []
 
     def _insert_tag(self, node, tag):
         """insert a subnode based on node"""
@@ -237,10 +317,55 @@ class JATSArchiver(object):
         return subnode
 
 
+    def _insert_email_tag(self, node, tag):
+        """create an 'email' tag from the mailto: anchor tag passed in"""
+        # XXX: Implement This
+        raise NotImplementedError
+
+
+    def _insert_media_tag(self, node, tag):
+        subnode = etree.SubElement(node, 'media')
+        tailable = None
+
+        for child in tag.children:
+            if isinstance(child, element.NavigableString):
+                insert = unicode(child.string)
+                # XXX: process inline references to bibliography and 
+                #      figures here?
+                if tailable is None:
+                    subnode.text = insert
+                else:
+                    tailable.tail = insert
+                    tailable = None
+            elif isinstance(child, element.Tag):
+                tailable = self._insert_tag(subnode, child)
+
+        return subnode
+
+
     def _process_link(self, node, tag):
         """convert html links into cross-reference tags for JATS"""
-        # XXX: Fix This to do the right thing
-        return self._insert_tag(node, tag)
+        href = tag['href']
+        if 'mailto' in href:
+            subnode = self._insert_email_tag(node, tag)
+        else:
+            if is_internal(href):
+                # deal with internal links in one way
+                # might be a media file, might be another paper
+                if not is_media_url(href):
+                    subnode = self._insert_tag(node, tag)
+                else:
+                    subnode = self._insert_media_tag(node, tag)
+            else:
+                # deal with external links in another way
+                # might be a mailto, might be a link to some external resource
+                subnode = self._insert_tag(node, tag)
+
+            set_namespaced_attribute(
+                subnode, 'href', tag['href'], prefix='xlink'
+            )
+
+        return subnode
 
 
     def _handle_references(self, ids):
@@ -263,12 +388,108 @@ class JATSArchiver(object):
             print "Reference Lookup Failed"
             raise IOError
 
+
     def _append_back_matter(self):
         if self.reference_tree is not None:
             back = etree.SubElement(self.parsed_xml.getroot(), 'back')
             ref_list = deepcopy(self.reference_tree).getroot()
             back.append(ref_list)
 
+
     def _set_figure_id(self, f_node):
         tmpl = 'fig-{0}'
         f_node.attrib['id'] = tmpl.format(self.figure_list.index(f_node) + 1)
+
+
+    def _handle_crosslinks(self):
+        """convert files and resolve of figure and reference links"""
+        # begin by processing raw supplemental and galley files:
+        self.galley_storage = convert_galleys(self.raw['galleys'])
+        self.supplemental_storage = convert_supplemental_files(
+            self.raw['supplemental_files']
+        )
+        self._resolve_figures()
+        self._resolve_media_links()
+        self._resolve_references()
+
+
+    def _resolve_figures(self):
+        """match figures to the textual references and fetch files to store"""
+        self._prepare_figure_files()
+        import pdb; pdb.set_trace( )
+        pass
+
+
+    def _prepare_figure_files(self):
+        """create archive names for figure files and update xml to match"""
+        g_count = 1
+        for figure in self.figure_list:
+            for graphic in figure.findall('graphic'):
+                filename = get_namespaced_attribute(
+                    graphic, 'href', prefix='xlink'
+                )
+                file_infos = []
+                if filename:
+                    file_infos.extend(self._find_file_infos(
+                        filename, self.galley_storage['html'][0]['images']
+                    ))
+                if len(file_infos) == 1:
+                    file_info = file_infos[0]
+                    new_filename = self._make_archive_filename(
+                        file_info, g_count, 'g'
+                    )
+                    set_namespaced_attribute(
+                        graphic, 'href', new_filename, prefix='xlink'
+                    )
+                    self.files_to_archive[new_filename] = file_info['path']
+                    g_count += 1
+                else:
+                    # we found more than one fileinfo.  At the moment this
+                    # indicates an error condition, report the problem and 
+                    # return.
+                    msg = 'More than one possible file has been found for '
+                    msg += 'figure graphic {0}'
+                    print msg.format(filename)
+
+
+    def _resolve_media_links(self):
+        pass
+
+
+    def _resolve_references(self):
+        """match references in back matter to inline citations"""
+        pass
+
+
+    def _find_file_infos(self, key, location=None, default=None):
+        """search for files by filename in storage locations
+
+        since there may possibly be more than one instance of a file stored
+        by the same filename in different storages, always return a list of
+        the files found, even if it is only one.
+        """
+        if location is not None:
+            val = location.get(key, default)
+            if val != default:
+                val = list(val)
+            return val
+        else:
+            possibles = []
+            for location in [self.galley_storage['html'][0].get('images', {}),
+                             self.galley_storage['html'][0].get('files', {}),
+                             self.supplemental_storage]:
+                possible = location.get(key, default)
+                if possible != default:
+                    possibles.append(possible)
+            return possibles or default
+
+
+    def _make_archive_filename(self, file_info, count, prefix):
+        """create filenames compliant with PMC standards
+
+        see http://www.ncbi.nlm.nih.gov/pmc/pub/filespec-delivery/#naming-artd
+        """
+        ext = os.path.splitext(file_info['path'])[1]
+        typ_name = '{0}{1:0>3}{2}'.format(prefix, count, ext)
+        return '-'.join([self.inner_basename, typ_name])
+        

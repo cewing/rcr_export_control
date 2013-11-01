@@ -8,6 +8,7 @@ from rcr_export_control.xml_tools import convert_supplemental_files
 from rcr_export_control.xml_tools import extract_reference_pmids
 from rcr_export_control.xml_tools import get_archive_content_base_id
 from rcr_export_control.xml_tools import get_archive_id
+from rcr_export_control.xml_tools import get_index_from_figure_ref
 from rcr_export_control.xml_tools import get_namespaced_attribute
 from rcr_export_control.xml_tools import is_internal
 from rcr_export_control.xml_tools import is_media_url
@@ -16,6 +17,7 @@ from rcr_export_control.xml_tools import set_namespaced_attribute
 from rcr_export_control.xml_tools import set_sec_type
 
 import os
+import re
 import requests
 import zipfile
 
@@ -149,7 +151,6 @@ class JATSArchiver(object):
         # be stored in a dict with the archive name as the key and the 
         # filesystem path as the stored value
         for name, path in self.files_to_archive.items():
-            import pdb; pdb.set_trace( )
             archive.write(path, name, self.compression)
         archive.close()
 
@@ -416,8 +417,114 @@ class JATSArchiver(object):
     def _resolve_figures(self):
         """match figures to the textual references and fetch files to store"""
         self._prepare_figure_files()
-        import pdb; pdb.set_trace( )
+        # iterate over all the paragraphs at the top of sections of the body
+        # of our parsed article xml
+        for paragraph in self.parsed_xml.findall('/body/sec/p'):
+            self._process_node_for_figures(paragraph)
+
         pass
+
+
+    def _process_node_for_figures(self, node):
+        if node.text:
+            text = node.text
+            node.text = ''
+            self._process_text_for_figures(node, text)
+        for child in node:
+            self._process_node_for_figures(child)
+        if node.tail:
+            text = node.tail
+            node.tail = ''
+            self._process_text_for_figures(node, text, False)
+
+
+    def _process_text_for_figures(self, node, text, as_text=True):
+        fig_pat = re.compile('(fig[s]?\.)', re.I|re.M)
+        id_pat = re.compile('([\da-zA-Z-]{1,5})', re.I|re.M)
+        # if text.startswith('Followup angiography demonstrated'):
+        #     import pdb; pdb.set_trace( )
+        inserted = None
+        found_figure = False
+        attr = 'text'
+        if not as_text:
+            attr = 'tail'
+        while text:
+            if not found_figure:
+                # search for figures
+                parts = fig_pat.split(text, 1)
+                if len(parts) == 3:
+                    # we have found a figure.  Append all text up to and including
+                    # the start of the reference to the parent node text and move
+                    # on.
+                    head, match, text = parts
+                    if inserted is not None:
+                        current_tail = inserted.tail or ''
+                        inserted.tail = current_tail + head + match
+                    else:
+                        current = getattr(node, attr)
+                        setattr(node, attr, current + head + match)
+                    found_figure = True
+                else:
+                    if inserted is not None:
+                        current_tail = inserted.tail or ''
+                        inserted.tail = current_tail + parts[0]
+                    else:
+                        current = getattr(node, attr)
+                        setattr(node, attr, current + parts[0])
+                    return
+            else:
+                parts = id_pat.split(text, 1)
+                if len(parts) == 3:
+                    head, match, text = parts
+                    # place the head part which is just plain text
+                    if inserted is not None:
+                        current_tail = inserted.tail or ''
+                        inserted.tail = current_tail + head
+                    else:
+                        current = getattr(node, attr)
+                        setattr(node, attr, current + head)
+                    # get the id from the match, build an xref and insert it
+                    # then place the match into it as text
+                    fig_index = get_index_from_figure_ref(match)
+                    if fig_index is not None:
+                        try:
+                            fig_id = self.figure_list[fig_index].attrib['id']
+                        except IndexError:
+                            msg = "unable to find figure {0} while resolving "
+                            msg += "figure references.  Please check the "
+                            msg += "original html."
+                            print msg.format(match)
+                        inserted = etree.SubElement(node, 'xref')
+                        inserted.text = match
+                        set_namespaced_attribute(
+                            inserted, 'href', fig_id, 'xlink'
+                        )
+                    else:
+                        # this condition arises when we have figure references
+                        # like "(Figs 1A, C)".  at this point, the parts 
+                        # are (', ', 'C', ')...').  For now, assume that the
+                        # head and match should both be part of the existing 
+                        # inserted xref and the remainder should be treated
+                        # as text for continuing processing.
+                        msg = "unable to find a viable index in the string "
+                        msg += "{0}.  Please verify the linking of figures "
+                        msg += "in the output JATS xml."
+                        print msg.format(match)
+                        if inserted is not None:
+                            current_text = inserted.text or ''
+                            inserted.text = current_text + head + match
+                        else:
+                            current = getattr(node, attr)
+                            setattr(node, attr, current + head + match)
+                    # the remaining text might signal that we should stop, if
+                    # this is the case, we are done finding a figure, set that
+                    # to False so the next pass will 'do the right thing'
+                    if not text or text[0] in [')', ']']:
+                        found_figure = False
+                else:
+                    current = getattr(node, attr)
+                    setattr(node, attr, current + parts[0])
+                    return
 
 
     def _prepare_figure_files(self):
@@ -428,11 +535,15 @@ class JATSArchiver(object):
                 filename = get_namespaced_attribute(
                     graphic, 'href', prefix='xlink'
                 )
+                filename = os.path.basename(filename)
                 file_infos = []
                 if filename:
-                    file_infos.extend(self._find_file_infos(
-                        filename, self.galley_storage['html'][0]['images']
-                    ))
+                    try:
+                        file_infos.extend(self._find_file_infos(
+                            filename, self.galley_storage['html'][0]['images']
+                        ))
+                    except TypeError:
+                        import pdb; pdb.set_trace( )
                 if len(file_infos) == 1:
                     file_info = file_infos[0]
                     new_filename = self._make_archive_filename(

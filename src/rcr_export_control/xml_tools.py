@@ -8,6 +8,7 @@ from urlparse import parse_qs
 
 import mimetypes
 import os
+import re
 
 def parse_export_xml(exported):
     """parse the xml exported by the PHP JATS exporter plugin"""
@@ -217,3 +218,19 @@ def is_media_url(href):
         return True
 
     return False
+
+
+def get_index_from_figure_ref(ref):
+    """return indexes from integer parts of figure references like '1' or '2a'
+    
+    >>> get_index_from_figure_ref('1')
+    0
+    >>> get_index_from_figure_ref('2a')
+    1
+    """
+    dig_pat = re.compile('[\d]{1,3}')
+    match = dig_pat.search(ref)
+    if match is None:
+        return None
+
+    return int(ref[match.start():match.end()]) - 1

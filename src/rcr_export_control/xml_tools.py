@@ -213,7 +213,7 @@ def is_media_url(href):
         # http://radiology.casereports.net/index.php/rcr/article/view/433/1117
         return False
 
-    prefix = mime[0].split('/')
+    prefix = mime[0].split('/')[0]
     if prefix in constants.MEDIA_MIME_TYPE_PREFIXES:
         return True
 

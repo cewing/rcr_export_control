@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from bs4 import element
 from copy import deepcopy
+from itertools import chain
 from lxml import etree
 from rcr_export_control.xml_tools import convert_tag_type
 from rcr_export_control.xml_tools import convert_galleys
@@ -40,6 +41,7 @@ class JATSArchiver(object):
     figure_list = []
     galley_storage = {}
     supplemental_storage = {}
+    media_files_to_archive = {}
     files_to_archive = {}
     compression = zipfile.ZIP_STORED
     pubmed_base_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
@@ -126,6 +128,10 @@ class JATSArchiver(object):
             # (refs, media and figures)
             self._handle_crosslinks()
 
+            # ensure that if there is a pdf galley, it is written to the 
+            # archive
+            self._handle_pdf_galley()
+
         self.converted = True
 
 
@@ -151,6 +157,8 @@ class JATSArchiver(object):
         # be stored in a dict with the archive name as the key and the 
         # filesystem path as the stored value
         for name, path in self.files_to_archive.items():
+            archive.write(path, name, self.compression)
+        for name, path in self.media_files_to_archive.items():
             archive.write(path, name, self.compression)
         archive.close()
 
@@ -232,6 +240,9 @@ class JATSArchiver(object):
             elif isinstance(tag, element.Tag):
                 if tag.name.lower() == 'a':
                     tailable = self._process_link(p_node, tag)
+                elif tag.name.lower() == 'br':
+                    current_node_text = p_node.text or ''
+                    p_node.text = current_node_text + (tag.tail or '')
                 else:
                     tailable = self._insert_tag(p_node, tag)
 
@@ -298,9 +309,9 @@ class JATSArchiver(object):
     def _insert_tag(self, node, tag):
         """insert a subnode based on node"""
         subnode_type = convert_tag_type(tag)
+        tailable = None
         subnode = etree.SubElement(node, subnode_type)
         subnode.tail = "\n"
-        tailable = None
 
         for child in tag.children:
             if isinstance(child, element.NavigableString):
@@ -325,14 +336,13 @@ class JATSArchiver(object):
 
 
     def _insert_media_tag(self, node, tag):
-        subnode = etree.SubElement(node, 'media')
+        media_node = etree.SubElement(node, 'media')
+        subnode = etree.SubElement(media_node, 'label')
+        set_namespaced_attribute(media_node, 'href', tag['href'], 'xlink')
         tailable = None
-
         for child in tag.children:
             if isinstance(child, element.NavigableString):
                 insert = unicode(child.string)
-                # XXX: process inline references to bibliography and 
-                #      figures here?
                 if tailable is None:
                     subnode.text = insert
                 else:
@@ -341,27 +351,18 @@ class JATSArchiver(object):
             elif isinstance(child, element.Tag):
                 tailable = self._insert_tag(subnode, child)
 
-        return subnode
+        return media_node
 
 
     def _process_link(self, node, tag):
         """convert html links into cross-reference tags for JATS"""
         href = tag['href']
-        if 'mailto' in href:
+        if is_media_url(href):
+            subnode = self._insert_media_tag(node, tag)
+        elif 'mailto' in href:
             subnode = self._insert_email_tag(node, tag)
         else:
-            if is_internal(href):
-                # deal with internal links in one way
-                # might be a media file, might be another paper
-                if not is_media_url(href):
-                    subnode = self._insert_tag(node, tag)
-                else:
-                    subnode = self._insert_media_tag(node, tag)
-            else:
-                # deal with external links in another way
-                # might be a mailto, might be a link to some external resource
-                subnode = self._insert_tag(node, tag)
-
+            subnode = self._insert_tag(node, tag)
             set_namespaced_attribute(
                 subnode, 'href', tag['href'], prefix='xlink'
             )
@@ -496,9 +497,8 @@ class JATSArchiver(object):
                             print msg.format(match)
                         inserted = etree.SubElement(node, 'xref')
                         inserted.text = match
-                        set_namespaced_attribute(
-                            inserted, 'href', fig_id, 'xlink'
-                        )
+                        inserted.attrib['rid'] = fig_id
+                        inserted.attrib['ref-type'] = 'fig'
                     else:
                         # this condition arises when we have figure references
                         # like "(Figs 1A, C)".  at this point, the parts 
@@ -543,7 +543,7 @@ class JATSArchiver(object):
                             filename, self.galley_storage['html'][0]['images']
                         ))
                     except TypeError:
-                        import pdb; pdb.set_trace( )
+                        raise
                 if len(file_infos) == 1:
                     file_info = file_infos[0]
                     new_filename = self._make_archive_filename(
@@ -564,7 +564,45 @@ class JATSArchiver(object):
 
 
     def _resolve_media_links(self):
-        pass
+        """fix up href attributes for media links"""
+        media_links = self.parsed_xml.findall('//media')
+        for link in media_links:
+            href = get_namespaced_attribute(link, 'href', 'xlink')
+            # if the href is internal, this points to a file on the server
+            # and we must archive and fix the reference, otherwise, we can
+            # leave it alone
+            if is_internal(href):
+                filename = os.path.basename(href)
+                file_infos = []
+                file_infos.extend(self._find_file_infos(filename))
+                if not file_infos:
+                    file_infos.extend(
+                        self._find_file_infos(filename, by_path=True)
+                    )
+
+                # one last check
+                if file_infos:
+                    file_info = file_infos[0]
+                    if file_info is not None:
+                        media_count = len(self.media_files_to_archive) + 1
+                        new_filename = self._make_archive_filename(
+                            file_info, media_count, 's'
+                        )
+                        self.media_files_to_archive[new_filename] = file_info['path']
+                        set_namespaced_attribute(
+                            link, 'href', new_filename, 'xlink'
+                        )
+
+                    if len(file_infos) > 1:
+                        msg = "Unable to uniquely identify a candidate file "
+                        msg += "from the link '{0}'. Using the first "
+                        msg += "identified file from path '{1}'"
+                        print msg.format(href, file_info['path'])
+                else:
+                    msg = "Unable to resolve a reference to the media file "
+                    msg += "'{0}' from link '{1}'. Please check the original "
+                    msg += "and the output archive for this article."
+                    print msg.format(filename, href)
 
 
     def _resolve_references(self):
@@ -572,7 +610,9 @@ class JATSArchiver(object):
         pass
 
 
-    def _find_file_infos(self, key, location=None, default=None):
+    def _find_file_infos(
+        self, key, location=None, default=(), by_path=False
+    ):
         """search for files by filename in storage locations
 
         since there may possibly be more than one instance of a file stored
@@ -580,18 +620,38 @@ class JATSArchiver(object):
         the files found, even if it is only one.
         """
         if location is not None:
-            val = location.get(key, default)
-            if val != default:
-                val = list(val)
-            return val
+            if not by_path:
+                val = location.get(key, default)
+                if val != default:
+                    val = list(val)
+                return val
+            else:
+                vals = []
+                for infos in location.values():
+                    for info in infos:
+                        if 'path' in info and key in info['path']:
+                            vals.extend(infos)
+                            break
         else:
             possibles = []
-            for location in [self.galley_storage['html'][0].get('images', {}),
-                             self.galley_storage['html'][0].get('files', {}),
-                             self.supplemental_storage]:
-                possible = location.get(key, default)
-                if possible != default:
-                    possibles.append(possible)
+            if not by_path:
+                for location in [
+                    self.galley_storage['html'][0].get('images', {}),
+                    self.galley_storage['html'][0].get('files', {}),
+                    self.supplemental_storage
+                ]:
+                    possible = location.get(key, default)
+                    if possible != default:
+                        possibles.append(possible)
+            else:
+                for infos in chain(*[
+                    self.galley_storage['html'][0].get('images', {}).values(),
+                    self.galley_storage['html'][0].get('files', {}).values(),
+                    self.supplemental_storage.values()
+                ]):
+                    for info in infos:
+                        if 'path' in info and key in info['path']:
+                            possibles.extend(infos)
             return possibles or default
 
 
@@ -604,3 +664,26 @@ class JATSArchiver(object):
         typ_name = '{0}{1:0>3}{2}'.format(prefix, count, ext)
         return '-'.join([self.inner_basename, typ_name])
         
+
+    def _handle_pdf_galley(self):
+        """generate name and place galley into archive files list"""
+        pdf_galleys = self.galley_storage.get('pdf', [])
+        possible = []
+        file_path = None
+        for galley in pdf_galleys:
+            galley_files = galley.get('files', {})
+            for galley_file in galley_files.values():
+                for file_info in galley_file:
+                    if 'path' in file_info:
+                        possible.append(file_info['path'])
+        if not possible:
+            msg = "Unable to identify a pdf galley for this article."
+            print msg
+            return
+        if len(possible) > 1:
+            msg = "Unable to identify a unique pdf galley for this article. "
+            msg += "Using the first identified file: {0}"
+            print msg.format(possible[0])
+        file_path = possible[0]
+        file_name = "{0}.pdf".format(self.inner_basename)
+        self.files_to_archive[file_name] = file_path

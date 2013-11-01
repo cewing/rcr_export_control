@@ -72,6 +72,8 @@ HTML_TO_JATS_MAPPING = {
     'b': 'bold',
     'img': 'graphic',
     'a': 'uri',
+    'strong': 'bold',
+    'br': None,
 }
 
 

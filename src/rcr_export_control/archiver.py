@@ -191,7 +191,7 @@ class JATSArchiver(object):
                     comp = map(str.lower, tag['class'])
                     if 'subheading' in comp:
                         # stop when we reach the next subheading
-                        print "breaking loop on new subheading: {0}\n\n".format(tag)
+                        print "breaking loop on new subheading: \n{0}\n\n".format(tag)
                         break
                     elif 'figure' in comp:
                         # this is a figure.  Deal with it.
@@ -203,7 +203,7 @@ class JATSArchiver(object):
                         # 'figure' class on figure paragraphs, try to catch
                         # figures anyway.
                         if tag.find(class_="figureCaption") is not None or tag.find('img') is not None:
-                            print "found a figure by other means: {0}\n\n".format(tag)
+                            print "found a figure by other means: \n{0}\n\n".format(tag)
                             # this is a figure.  Deal with it.
                             if self.current_figure_node is None:
                                 self.current_figure_node = etree.SubElement(
@@ -211,7 +211,7 @@ class JATSArchiver(object):
                                 )
                             self._process_malformed_figure(tag)
                         else:
-                            print 'adding paragraph {0} to section\n\n'.format(tag)
+                            print 'adding paragraph \n{0}\nto section\n\n'.format(tag)
                             # import pdb; pdb.set_trace( )
                             p_node = etree.SubElement(sec_node, 'p')
                             self._process_paragraph(p_node, tag)
@@ -233,9 +233,11 @@ class JATSArchiver(object):
                 # XXX: process inline references to bibliography and 
                 #      figures here?
                 if tailable is None:
-                    p_node.text = insert
+                    current = p_node.text or ''
+                    p_node.text = current + insert
                 else:
-                    tailable.tail = insert
+                    current_tail = tailable.tail or ''
+                    tailable.tail = current_tail + insert
                     tailable = None
             elif isinstance(tag, element.Tag):
                 if tag.name.lower() == 'a':
@@ -309,6 +311,9 @@ class JATSArchiver(object):
     def _insert_tag(self, node, tag):
         """insert a subnode based on node"""
         subnode_type = convert_tag_type(tag)
+        if subnode_type is None:
+            return None
+
         tailable = None
         subnode = etree.SubElement(node, subnode_type)
         subnode.tail = "\n"
@@ -363,9 +368,10 @@ class JATSArchiver(object):
             subnode = self._insert_email_tag(node, tag)
         else:
             subnode = self._insert_tag(node, tag)
-            set_namespaced_attribute(
-                subnode, 'href', tag['href'], prefix='xlink'
-            )
+            if subnode is not None:
+                set_namespaced_attribute(
+                    subnode, 'href', tag['href'], prefix='xlink'
+                )
 
         return subnode
 
@@ -377,6 +383,13 @@ class JATSArchiver(object):
         xml. This is then transformed through xslt into a JATS-compliant ref-list
         element and that element is returned.
         """
+        if None in ids:
+            msg = "There have been references found with no links to pubmed. "
+            msg += "These references cannot be properly processed.  Please "
+            msg += "check the output xml from this article to manually "
+            msg += "resolve the issue."
+            print msg
+            ids = [id for id in ids if id is not None]
         print "Looking up {0} references".format(len(ids))
         query = {'id': ','.join(ids)}
         query.update(self.base_query)
@@ -395,7 +408,8 @@ class JATSArchiver(object):
         if self.reference_tree is not None:
             back = etree.SubElement(self.parsed_xml.getroot(), 'back')
             ref_list = deepcopy(self.reference_tree).getroot()
-            back.append(ref_list)
+            if ref_list is not None:
+                back.append(ref_list)
 
 
     def _set_figure_id(self, f_node):

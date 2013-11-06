@@ -159,17 +159,20 @@ def extract_reference_pmids(html):
     <br/>
     """
     pmids = []
-    ref_graph = html.find('p', class_='references')
+    ref_graphs = html.find_all('p', class_='references')
     # this is our references paragraph, use it
-    links = ref_graph.find_all('a')
-    for link in links:
-        url = link.get('href')
-        if url is not None:
-            query = urlparse(url).query
-            if query:
-                qdict = parse_qs(query)
-                if 'list_uids' in qdict:
-                    pmids.extend(qdict['list_uids'])
+    for ref_graph in ref_graphs:
+        links = ref_graph.find_all('a')
+        if not links:
+            pmids.append(None)
+        for link in links:
+            url = link.get('href')
+            if url is not None:
+                query = urlparse(url).query
+                if query:
+                    qdict = parse_qs(query)
+                    if 'list_uids' in qdict:
+                        pmids.extend(qdict['list_uids'])
     return pmids
 
 

@@ -607,7 +607,61 @@ class JATSArchiver(object):
 
     def _resolve_references(self):
         """match references in back matter to inline citations"""
-        pass
+        for paragraph in self.parsed_xml.findall('/body/sec/p'):
+            self._process_node_for_references(paragraph)
+
+
+    def _process_node_for_references(self, node):
+        if node.text:
+            text = node.text
+            node.text = ''
+            self._process_text_for_references(node, text)
+        for child in node:
+            self._process_node_for_references(child)
+        if node.tail:
+            text = node.tail
+            node.tail = ''
+            self._process_text_for_references(node, text, False)
+
+
+    def _process_text_for_references(self, node, text, as_text=True):
+        bibref_pat = re.compile('\(([\d,\s]+)\)', re.I|re.M)
+        comma_pat = re.compile(',\s?', re.I|re.M)
+        inserted = None
+        attr = 'text'
+        if not as_text:
+            attr = 'tail'
+        while text:
+            parts = bibref_pat.split(text, 1)
+            if len(parts) == 3:
+                # we've found the marker we seek, process it
+                head, match, text = parts
+                # start by appending the part up to the match to the current
+                # end of where we are.
+                if inserted is not None:
+                    current_tail = inserted.tail or ''
+                    inserted.tail = current_tail + head + '('
+                else:
+                    current = getattr(node, attr)
+                    setattr(node, attr, current + head + '(')
+                text = ')' + text
+                # then process each number found in the matched pattern
+                refnums = comma_pat.split(match)
+                for index, bibref_number in enumerate(refnums):
+                    inserted = etree.SubElement(node, 'xref')
+                    inserted.text = bibref_number
+                    inserted.attrib['rid'] = 'ref-{0}'.format(bibref_number)
+                    inserted.attrib['ref-type'] = 'bibr'
+                    if index + 1 < len(refnums):
+                        inserted.tail = ', '
+            else:
+                if inserted is not None:
+                    current_tail = inserted.tail or ''
+                    inserted.tail = current_tail + parts[0]
+                else:
+                    current = getattr(node, attr)
+                    setattr(node, attr, current + parts[0])
+                return
 
 
     def _find_file_infos(

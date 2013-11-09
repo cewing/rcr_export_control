@@ -104,9 +104,9 @@ def execute_php_export(command, articleid):
     return code
 
 
-def create_article_archive(out_path, exported):
+def create_article_archive(out_path, exported, log_level=0):
     parsed = parse_export_xml(exported)
-    archiver = JATSArchiver(parsed, out_path)
+    archiver = JATSArchiver(parsed, out_path, log_level)
     archiver.convert()
     archiver.archive()
     

@@ -16,6 +16,7 @@ from rcr_export_control.xml_tools import is_media_url
 from rcr_export_control.xml_tools import parse_article_html
 from rcr_export_control.xml_tools import set_namespaced_attribute
 from rcr_export_control.xml_tools import set_sec_type
+from textwrap import TextWrapper
 
 import os
 import re
@@ -51,9 +52,18 @@ class JATSArchiver(object):
     }
 
 
-    def __init__(self, parsed, out_path):
+    def __init__(self, parsed, out_path, log_level=0):
         self.parsed_xml = parsed
         self.out_path = out_path
+        if log_level:
+            if log_level > 3:
+                log_level = 3
+            self.log_level = log_level
+        else:
+            self.log_level = 0
+        self.text_wrapper = TextWrapper(
+            initial_indent="   ", subsequent_indent="   "
+        )
         self.base_filename = get_archive_id(self.parsed_xml)
         self.inner_basename = get_archive_content_base_id(self.base_filename)
         try:
@@ -103,14 +113,21 @@ class JATSArchiver(object):
 
             header_tags = html.find_all('p', class_='subheading')
             # XXX this should be logging to an output stream
-            print "building {0} sections".format(len(header_tags))
+            self._log_msg(
+                "Processing {0} potential sections".format(len(header_tags)),
+                level=1
+            )
 
             for header_tag in header_tags:
                 heading = header_tag.text
                 sec_node = None
                 if heading not in ['Abstract', 'References']:
                     # XXX this should be logging to an output stream
-                    print "building section from {0}\n\n".format(header_tag)
+                    self._log_msg(
+                        "Building Section using subheading",
+                        "{0}\n".format(heading),
+                        level=2
+                    )
                     # dump abstract, it's elsewhere
                     # handle references separately
                     sec_node = etree.SubElement(body, 'sec')
@@ -164,6 +181,28 @@ class JATSArchiver(object):
 
     # Private API
 
+    def _log_msg(self, header=None, msg=None, level=4):
+        """log script feedback and warning messages
+
+        level indicates the number of 'q' flags needed to suppress output. If
+        the number of flags passed on the command line meets or exceed this
+        value, the statement will be suppressed.
+
+        At the moment, this simply prints all messages to stdout.  It would
+        be good to replace this with more configurable logging.
+        """
+        if not (header or msg):
+            return
+
+        if level - self.log_level <= 0:
+            return
+
+        if header is not None:
+            print header
+        if msg is not None:
+            print self.text_wrapper.fill(msg)
+        print "\n"
+
     def _exerpt_body_content(self):
         """remove child nodes of the exported XML body tag for processing"""
         root = self.parsed_xml.getroot()
@@ -187,11 +226,18 @@ class JATSArchiver(object):
                     self.skip_next_paragraph = False
                     continue
                 # print "investigating tag: {0}\n\n".format(tag)
+                self._log_msg(
+                    "Investigating Tag", "{0}\n".format(tag), level=1
+                )
                 if 'class' in tag.attrs:
                     comp = map(str.lower, tag['class'])
                     if 'subheading' in comp:
                         # stop when we reach the next subheading
-                        print "breaking loop on new subheading: \n{0}\n\n".format(tag)
+                        self._log_msg(
+                            "Ending section on new subheading",
+                            "{0}\n".format(tag),
+                            level=3
+                        )
                         break
                     elif 'figure' in comp:
                         # this is a figure.  Deal with it.
@@ -203,7 +249,6 @@ class JATSArchiver(object):
                         # 'figure' class on figure paragraphs, try to catch
                         # figures anyway.
                         if tag.find(class_="figureCaption") is not None or tag.find('img') is not None:
-                            print "found a figure by other means: \n{0}\n\n".format(tag)
                             # this is a figure.  Deal with it.
                             if self.current_figure_node is None:
                                 self.current_figure_node = etree.SubElement(
@@ -211,20 +256,28 @@ class JATSArchiver(object):
                                 )
                             self._process_malformed_figure(tag)
                         else:
-                            print 'adding paragraph \n{0}\nto section\n\n'.format(tag)
-                            # import pdb; pdb.set_trace( )
                             p_node = etree.SubElement(sec_node, 'p')
                             self._process_paragraph(p_node, tag)
                             p_node.tail = "\n"
+                    if tag.name in ['ul', 'ol']:
+                        l_node = etree.SubElement(sec_node, 'list')
+                        self._process_list(l_node, tag)
+                    # we will also need to special-case handling definition
+                    # lists here.  grrrr.
 
             elif isinstance(tag, element.NavigableString):
                 # XXX Log navigable strings with non-whitespace in case we're
                 #     missing something important
-                pass
+                self._log_msg(
+                    "Unprocessed text at document root level",
+                    "'{0}'\n".format(tag),
+                    level=1,
+                )
 
 
     def _process_paragraph(self, p_node, p_tag):
         """iteratively process the children of an HTML paragraph tag"""
+        self._log_msg("Processing paragraph", "{0}\n".format(p_tag), level=2)
         tailable = None
 
         for tag in p_tag.children:
@@ -240,25 +293,50 @@ class JATSArchiver(object):
                     tailable.tail = current_tail + insert
                     tailable = None
             elif isinstance(tag, element.Tag):
+                # special cases for anchors, br tags and lists
                 if tag.name.lower() == 'a':
                     tailable = self._process_link(p_node, tag)
                 elif tag.name.lower() == 'br':
                     current_node_text = p_node.text or ''
                     p_node.text = current_node_text + (tag.tail or '')
+                elif tag.name.lower() in ['ol', 'ul']:
+                    l_node = etree.SubElement(p_node, 'list')
+                    self._process_list(l_node, tag)
+                    tailable = l_node
                 else:
                     tailable = self._insert_tag(p_node, tag)
 
+    def _process_list(self, l_node, l_tag):
+        """process lists properly"""
+        self._log_msg(
+            "Processing list", "{0}\n".format(l_tag), level=1
+        )
+        list_types = {'ul': 'bullet', 'ol': 'order'}
+        l_node.attrib['list-type'] = list_types[l_tag.name]
+
+        for li_tag in l_tag.find_all('li'):
+            li_node = etree.SubElement(l_node, 'list-item')
+            self._insert_tag(li_node, li_tag)
+            li_node.tail = "\n"
+
     def _process_figure(self, f_node, f_tag):
         """figures must be processed out properly"""
+        self._log_msg(
+            "Processing well-formed figure", "{0}\n".format(f_tag), level=2
+        )
         self.figure_list.append(f_node)
         self._set_figure_id(f_node)
         for caption_tag in f_tag.find_all('span', class_='figureCaption'):
+            self._log_msg(
+                "Appending figure caption", "{0}\n", level=1)
             caption_tag.name = 'p'
             caption_node = etree.SubElement(f_node, 'caption')
             caption_p = etree.SubElement(caption_node, 'p')
             self._process_paragraph(caption_p, caption_tag)
             caption_node.tail = "\n"
         for img_tag in f_tag.find_all('img'):
+            self._log_msg(
+                "Appending figure graphic", "{0}\n", level=1)
             graphic_node = self._insert_tag(f_node, img_tag)
             set_namespaced_attribute(
                 graphic_node, 'href', img_tag['src'], prefix='xlink'
@@ -269,6 +347,9 @@ class JATSArchiver(object):
 
     def _process_malformed_figure(self, f_tag):
         """handle figures that are spread among several concurrent paragraphs"""
+        self._log_msg(
+            "Processing malformed figure", "{0}\n".format(f_tag), level=2
+        )
         f_node = self.current_figure_node
         if f_node not in self.figure_list:
             self.figure_list.append(f_node)
@@ -277,16 +358,31 @@ class JATSArchiver(object):
         if len(figure_images) > 0:
             # this node contains images, store them and move on
             self.current_figure_images.extend(figure_images)
+            self._log_msg(
+                "Preparing {0} graphics for figure".format(len(figure_images)),
+                "{0}\n".format(" ".join(map(str, figure_images))),
+                level=1
+            )
         elif self.current_figure_images and\
             f_tag.find(class_='figureCaption') is not None:
             # this node is the caption, time to process it all
             for caption_tag in f_tag.find_all('span', class_='figureCaption'):
+                self._log_msg(
+                    "Processing figure caption",
+                    "{0}\n".format(caption_tag),
+                    level=1
+                )
                 caption_tag.name = 'p'
                 caption_node = etree.SubElement(f_node, 'caption')
                 caption_p = etree.SubElement(caption_node, 'p')
                 self._process_paragraph(caption_p, caption_tag)
                 caption_node.tail = "\n"
             for img_tag in self.current_figure_images:
+                self._log_msg(
+                    "Appending figure graphic",
+                    "{0}\n".format(img_tag),
+                    level=1
+                )
                 graphic_node = self._insert_tag(f_node, img_tag)
                 set_namespaced_attribute(
                     graphic_node, 'href', img_tag['src'], prefix='xlink'
@@ -294,11 +390,13 @@ class JATSArchiver(object):
                 graphic_node.tail = "\n"
             f_node.tail = "\n"
             # empty out the buffers we've stored for processing this figure
+            self._log_msg("Figure processing complete", level=2)
             self._clear_stored_figure()
         else:
-            msg = "there has been a problem processing the figure associated"
-            msg += "with this tag:\n{0}\nPlease check your article html."
-            print msg.format(f_tag)
+            header = "ERROR: there has been a problem processing the figure ",
+            header += "associated with this tag.  Please check your article ",
+            header += "source HTML."
+            self._log_msg(header, "{0}\n".format(f_tag))
             # empty out the buffers we've stored for processing this figure
             self._clear_stored_figure()
 
@@ -308,9 +406,13 @@ class JATSArchiver(object):
         self.current_figure_node = None
         self.current_figure_images = []
 
-    def _insert_tag(self, node, tag):
+    def _insert_tag(self, node, tag, subnode_type=None):
         """insert a subnode based on node"""
-        subnode_type = convert_tag_type(tag)
+        self._log_msg("Inserting tag", "{0}\n".format(tag), level=1)
+        if subnode_type is None:
+            subnode_type = convert_tag_type(tag)
+
+        # for tag types that should be eliminated outright ('br')
         if subnode_type is None:
             return None
 
@@ -341,6 +443,9 @@ class JATSArchiver(object):
 
 
     def _insert_media_tag(self, node, tag):
+        self._log_msg(
+            "Inserting media tag for element", "{0}\n".format(tag), level=2
+        )
         media_node = etree.SubElement(node, 'media')
         subnode = etree.SubElement(media_node, 'label')
         set_namespaced_attribute(media_node, 'href', tag['href'], 'xlink')
@@ -361,6 +466,9 @@ class JATSArchiver(object):
 
     def _process_link(self, node, tag):
         """convert html links into cross-reference tags for JATS"""
+        self._log_msg(
+            "Processing xref link for element", '{0}\n'.format(tag), level=2
+        )
         href = tag['href']
         if is_media_url(href):
             subnode = self._insert_media_tag(node, tag)
@@ -388,9 +496,9 @@ class JATSArchiver(object):
             msg += "These references cannot be properly processed.  Please "
             msg += "check the output xml from this article to manually "
             msg += "resolve the issue."
-            print msg
+            self._log_msg("ERROR: in processing references", msg)
             ids = [id for id in ids if id is not None]
-        print "Looking up {0} references".format(len(ids))
+        self._log_msg("Looking up {0} references".format(len(ids)), level=1)
         query = {'id': ','.join(ids)}
         query.update(self.base_query)
         resp = requests.get(self.pubmed_base_url, params=query)
@@ -398,9 +506,9 @@ class JATSArchiver(object):
             # must pass a byte-string to the parser
             source = etree.XML(resp.content)
             self.reference_tree = self.transform(source)
-            print "References parsed"
+            self._log_msg("References parsed and transformed", level=1)
         else:
-            print "Reference Lookup Failed"
+            self._log_msg("ERROR", "Reference lookup failed")
             raise IOError
 
 
@@ -544,7 +652,13 @@ class JATSArchiver(object):
     def _prepare_figure_files(self):
         """create archive names for figure files and update xml to match"""
         g_count = 1
+        self._log_msg("Processing figure graphics files")
         for figure in self.figure_list:
+            self._log_msg(
+                "Processing graphics for figure",
+                "{0}\n".format(etree.tostring(figure)),
+                level=2
+            )
             for graphic in figure.findall('graphic'):
                 filename = get_namespaced_attribute(
                     graphic, 'href', prefix='xlink'
@@ -568,17 +682,23 @@ class JATSArchiver(object):
                     )
                     self.files_to_archive[new_filename] = file_info['path']
                     g_count += 1
+                    self._log_msg(
+                        "Built reference to graphic file",
+                        "{0}\n".format(file_info['path']),
+                        level=1
+                    )
                 else:
                     # we found more than one fileinfo.  At the moment this
                     # indicates an error condition, report the problem and 
                     # return.
                     msg = 'More than one possible file has been found for '
                     msg += 'figure graphic {0}'
-                    print msg.format(filename)
+                    self._log_msg("ERROR", msg.format(filename))
 
 
     def _resolve_media_links(self):
         """fix up href attributes for media links"""
+        self._log_msg("Resolving media links", level=3)
         media_links = self.parsed_xml.findall('//media')
         for link in media_links:
             href = get_namespaced_attribute(link, 'href', 'xlink')
@@ -586,6 +706,11 @@ class JATSArchiver(object):
             # and we must archive and fix the reference, otherwise, we can
             # leave it alone
             if is_internal(href):
+                self._log_msg(
+                    "Internal media link found",
+                    "{0}\n".format(etree.tostring(link)),
+                    level=2
+                )
                 filename = os.path.basename(href)
                 file_infos = []
                 file_infos.extend(self._find_file_infos(filename))
@@ -606,21 +731,29 @@ class JATSArchiver(object):
                         set_namespaced_attribute(
                             link, 'href', new_filename, 'xlink'
                         )
+                        self._log_msg(
+                            "Linking to file",
+                            "{0}\n".format(file_info['path']),
+                            level=1
+                        )
 
-                    if len(file_infos) > 1:
+                    if len(file_infos) > 1:    
                         msg = "Unable to uniquely identify a candidate file "
                         msg += "from the link '{0}'. Using the first "
                         msg += "identified file from path '{1}'"
-                        print msg.format(href, file_info['path'])
+                        self._log_msg(
+                            "WARNING", msg.format(href, file_info['path'])
+                        )
                 else:
                     msg = "Unable to resolve a reference to the media file "
                     msg += "'{0}' from link '{1}'. Please check the original "
                     msg += "and the output archive for this article."
-                    print msg.format(filename, href)
+                    self._log_msg('ERROR', msg.format(filename, href))
 
 
     def _resolve_references(self):
         """match references in back matter to inline citations"""
+        self._log_msg("Processing inline citations", level=3)
         for paragraph in self.parsed_xml.findall('/body/sec/p'):
             self._process_node_for_references(paragraph)
 
@@ -650,6 +783,10 @@ class JATSArchiver(object):
             if len(parts) == 3:
                 # we've found the marker we seek, process it
                 head, match, text = parts
+                self._log_msg(
+                    "Processing inline citation to {0}".format(match),
+                    level=1
+                )
                 # start by appending the part up to the match to the current
                 # end of where we are.
                 if inserted is not None:
@@ -662,6 +799,8 @@ class JATSArchiver(object):
                 # then process each number found in the matched pattern
                 refnums = comma_pat.split(match)
                 for index, bibref_number in enumerate(refnums):
+                    # XXX: insert level-1 logging here showing the reference
+                    # that matches to this reference number, somehow.
                     inserted = etree.SubElement(node, 'xref')
                     inserted.text = bibref_number
                     inserted.attrib['rid'] = 'ref-{0}'.format(bibref_number)

@@ -74,6 +74,7 @@ HTML_TO_JATS_MAPPING = {
     'a': 'uri',
     'strong': 'bold',
     'br': None,
+    'li': 'p'
 }
 
 

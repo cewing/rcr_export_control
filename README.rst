@@ -54,16 +54,23 @@ there will be more than one figure referenced in the statement, each should be
 separated by a comma. Series notation like "(Figs. 1-3)" **is not allowed**.
 If the multiple references are to sub-figures (like 1A, 1B, 1C) then the
 alphabetical portion of the reference may be listed in series: "(Figs 1A-C)".
-Use the following guidelines to help determine the right way to go:
+This series form will only be rendered correctly when all graphics for the
+figure share a single caption. If each sub-figure has it's own caption, then
+the correct form is to refer to each sub-figure by both number and letter:
+"(Figs. 5A and 5C)" Use the following guidelines to help determine the right
+way to go:
 
 **Good**:
 
 * (Fig. 1)
 * (Fig. 1A)
 * (Figs. 2, 3)
-* (Figs. 1A-C)
+* (Figs. 1A-C) [only works for multiple graphics with shared caption]
+* (Figs. 5A and 5C) [when each sub-figure graphic has its own caption]
 
 **Bad**:
 
-* (Figs 1-3) [use (Figs. 1, 2, 3) instead]
+* (Figs. 1-3) [use (Figs. 1, 2, 3) instead]
+* (Figs. 1A, B) [use (Figs. 1A, 1B) instead]
+* (Figs. 5A and C) [bad if each sub-figure graphic is separately captioned]
 

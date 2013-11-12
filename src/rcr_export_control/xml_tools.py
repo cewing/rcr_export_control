@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from bs4 import BeautifulSoup
 from bs4 import element
+from cStringIO import StringIO
 from lxml import etree
 from rcr_export_control import constants
 from urlparse import urlparse
@@ -10,11 +11,33 @@ import mimetypes
 import os
 import re
 
+
+XML_ILLEGALS = u'|'.join(u'[%s-%s]' % (s, e) for s, e in [
+    (u'\u0000', u'\u0008'),             # null and C0 controls
+    (u'\u000B', u'\u000C'),             # vertical tab and form feed
+    (u'\u000E', u'\u001F'),             # shift out / shift in
+    (u'\u007F', u'\u009F'),             # C1 controls
+    (u'\uD800', u'\uDFFF'),             # High and Low surrogate areas
+    (u'\uFDD0', u'\uFDDF'),             # not permitted for interchange
+    (u'\uFFFE', u'\uFFFF'),             # byte order marks
+    ])
+RE_SANITIZE_XML = re.compile(XML_ILLEGALS, re.M | re.U)
+REF_PAT = re.compile('(\d{1,3})\.')
+
+
 def parse_export_xml(exported):
     """parse the xml exported by the PHP JATS exporter plugin"""
     parser = etree.XMLParser(encoding='utf-8')
-    parsed = etree.parse(exported, parser)
+    fixed = StringIO(remove_illegal_chars(exported))
+    parsed = etree.parse(fixed, parser)
     return parsed
+
+
+def remove_illegal_chars(exported):
+    """remove illegal characters for XML from the source exported from PHP"""
+    decoded_source = exported.read().decode('utf-8')
+    sanitized = RE_SANITIZE_XML.sub('', decoded_source)
+    return sanitized.encode('utf-8')
 
 
 def parse_article_html(html_node):
@@ -159,20 +182,39 @@ def extract_reference_pmids(html):
     <br/>
     """
     pmids = []
+    current_pmid_count = 0
+    pmid_candidate = [None]
+    seeking_pmid = False
     ref_graphs = html.find_all('p', class_='references')
-    # this is our references paragraph, use it
+    # iterate over each reference paragraph:
     for ref_graph in ref_graphs:
-        links = ref_graph.find_all('a')
-        if not links:
-            pmids.append(None)
-        for link in links:
-            url = link.get('href')
-            if url is not None:
-                query = urlparse(url).query
-                if query:
-                    qdict = parse_qs(query)
-                    if 'list_uids' in qdict:
-                        pmids.extend(qdict['list_uids'])
+        # iterate over immediate child nodes in the paragraph
+        for node in ref_graph.children:
+            # look for navigable strings (these might be our references)
+            if isinstance(node, element.NavigableString):
+                # check to see if the current navigable string starts with
+                # an integer (this is definitely a reference)
+                match = REF_PAT.match(node.strip())
+                if match is not None:
+                    new_pmid_count = int(match.groups()[0])
+                    # have we reached a new reference?
+                    if new_pmid_count > current_pmid_count:
+                        if seeking_pmid:
+                            pmids.extend(pmid_candidate)
+                            pmid_candidate = [None]
+                        else:
+                            seeking_pmid = True
+                        current_pmid_count = new_pmid_count
+            elif isinstance(node, element.Tag) and node.name == ('a'):
+                url = node.get('href')
+                if url is not None:
+                    query = urlparse(url).query
+                    if query:
+                        qdict = parse_qs(query)
+                        if 'list_uids' in qdict:
+                            pmid_candidate = qdict['list_uids']
+    # at the end of it all, we append whatever pmid_candidate we have
+    pmids.extend(pmid_candidate)
     return pmids
 
 

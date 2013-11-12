@@ -225,7 +225,6 @@ class JATSArchiver(object):
                 if self.skip_next_paragraph and tag.name == 'p':
                     self.skip_next_paragraph = False
                     continue
-                # print "investigating tag: {0}\n\n".format(tag)
                 self._log_msg(
                     "Investigating Tag", "{0}\n".format(tag), level=1
                 )
@@ -491,20 +490,67 @@ class JATSArchiver(object):
         xml. This is then transformed through xslt into a JATS-compliant ref-list
         element and that element is returned.
         """
+        bad_slots = []
+        orig_count = len(ids)
         if None in ids:
             msg = "There have been references found with no links to pubmed. "
             msg += "These references cannot be properly processed.  Please "
             msg += "check the output xml from this article to manually "
             msg += "resolve the issue."
             self._log_msg("ERROR: in processing references", msg)
-            ids = [id for id in ids if id is not None]
-        self._log_msg("Looking up {0} references".format(len(ids)), level=1)
+            fixed_ids = []
+            for idx, pmid in enumerate(ids):
+                if pmid is None:
+                    bad_slots.append(idx)
+                else:
+                    fixed_ids.append(pmid)
+            ids = fixed_ids
+
+        if orig_count != len(ids):
+            msg = "Looking up {count} of {orig} references"
+        else:
+            msg = "Looking up {count} references"
+        self._log_msg(
+            msg.format(**{'count': len(ids), 'orig': orig_count}),
+            level=1
+        )
         query = {'id': ','.join(ids)}
         query.update(self.base_query)
         resp = requests.get(self.pubmed_base_url, params=query)
         if resp.ok:
             # must pass a byte-string to the parser
             source = etree.XML(resp.content)
+            for idx in bad_slots:
+                self._log_msg(
+                    "ERROR",
+                    'Bad reference {0}, inserting placeholder'.format(idx + 1)
+                )
+                summaries = source.findall('.//DocumentSummary')
+                insert_after = summaries[idx - 1]
+                insert_after.addnext(etree.Element('DocumentSummary'))
+                new = insert_after.getnext()
+                new.append(etree.Element('error'))
+                new.attrib['uid'] = 'INSERTED_PLACEHOLDER'
+            # check the resulting tree for error elements
+            err_nodes = source.findall('.//error')
+            for err_node in err_nodes:
+                # there has been an error in the request for data that did not
+                # result in a failed request, usually due to some reference 
+                # PMID failing to return data.  Report the problem:
+                uid = "Unidentified PMID"
+                for parent in err_node.iterancestors():
+                    if parent.tag.lower() == 'documentsummary':
+                        uid = parent.attrib['uid']
+                        break
+
+                # we've already warned about placeholders we are inserting
+                # so skip alerting a second time for those.
+                if uid != 'INSERTED_PLACEHOLDER':
+                    msg = "There was an error in PubMed processing PMID "
+                    msg += "{0}. Please check the resulting exported XML "
+                    msg += "for errors in the reference section."
+                    self._log_msg("ERROR", msg.format(uid))
+
             self.reference_tree = self.transform(source)
             self._log_msg("References parsed and transformed", level=1)
         else:
@@ -562,7 +608,7 @@ class JATSArchiver(object):
 
 
     def _process_text_for_figures(self, node, text, as_text=True):
-        fig_pat = re.compile('(fig[s]?\.)', re.I|re.M)
+        fig_pat = re.compile('([\(\[]{1}fig[s]?\.)', re.I|re.M)
         id_pat = re.compile('([\da-zA-Z-]{1,5})', re.I|re.M)
         # if text.startswith('Followup angiography demonstrated'):
         #     import pdb; pdb.set_trace( )
@@ -613,11 +659,29 @@ class JATSArchiver(object):
                         try:
                             fig_id = self.figure_list[fig_index].attrib['id']
                         except IndexError:
-                            msg = "unable to find figure {0} while resolving "
+                            msg = "Unable to find figure {0} while resolving "
                             msg += "figure references.  Please check the "
                             msg += "original html."
-                            print msg.format(match)
-                        inserted = etree.SubElement(node, 'xref')
+                            self._log_msg('ERROR', msg.format(match))
+                        # XXX: at this point, if as_text is false, then inserted
+                        # should be generated as the next sibling of node, not as
+                        # a sub-element
+                        if as_text:
+                            inserted = etree.SubElement(node, 'xref')
+                        else:
+                            # preserve the tail of the current node since we'll 
+                            # lose it when we addnext
+                            orig_tail = node.tail
+                            node.addnext(etree.Element('xref'))
+                            # replace the tail of the current node
+                            node.tail = orig_tail
+                            # set inserted to the next node we just added
+                            inserted = node.getnext()
+                            # and chop off the tail we got thereby:
+                            inserted.tail = ''
+                            # replace the reference to the current node with 
+                            # inserted
+                            node = inserted
                         inserted.text = match
                         inserted.attrib['rid'] = fig_id
                         inserted.attrib['ref-type'] = 'fig'
@@ -628,10 +692,10 @@ class JATSArchiver(object):
                         # head and match should both be part of the existing 
                         # inserted xref and the remainder should be treated
                         # as text for continuing processing.
-                        msg = "unable to find a viable index in the string "
+                        msg = "Unable to find a viable index in the string "
                         msg += "{0}.  Please verify the linking of figures "
                         msg += "in the output JATS xml."
-                        print msg.format(match)
+                        self._log_msg('WARNING', msg.format(match))
                         if inserted is not None:
                             current_text = inserted.text or ''
                             inserted.text = current_text + head + match
@@ -801,7 +865,26 @@ class JATSArchiver(object):
                 for index, bibref_number in enumerate(refnums):
                     # XXX: insert level-1 logging here showing the reference
                     # that matches to this reference number, somehow.
-                    inserted = etree.SubElement(node, 'xref')
+
+                    # XXX: at this point, if as_text is false, then inserted
+                    # should be generated as the next sibling of node, not as
+                    # a sub-element
+                    if as_text:
+                        inserted = etree.SubElement(node, 'xref')
+                    else:
+                        # preserve the tail of the current node since we'll 
+                        # lose it when we addnext
+                        orig_tail = node.tail
+                        node.addnext(etree.Element('xref'))
+                        # replace the tail of the current node
+                        node.tail = orig_tail
+                        # set inserted to the next node we just added
+                        inserted = node.getnext()
+                        # and chop off the tail we got thereby:
+                        inserted.tail = ''
+                        # replace the reference to the current node with 
+                        # inserted
+                        node = inserted
                     inserted.text = bibref_number
                     inserted.attrib['rid'] = 'ref-{0}'.format(bibref_number)
                     inserted.attrib['ref-type'] = 'bibr'
@@ -874,6 +957,7 @@ class JATSArchiver(object):
 
     def _handle_pdf_galley(self):
         """generate name and place galley into archive files list"""
+        self._log_msg("Archiving article PDF galley")
         pdf_galleys = self.galley_storage.get('pdf', [])
         possible = []
         file_path = None
@@ -885,12 +969,12 @@ class JATSArchiver(object):
                         possible.append(file_info['path'])
         if not possible:
             msg = "Unable to identify a pdf galley for this article."
-            print msg
+            self._log_msg("ERROR", msg)
             return
         if len(possible) > 1:
             msg = "Unable to identify a unique pdf galley for this article. "
             msg += "Using the first identified file: {0}"
-            print msg.format(possible[0])
+            self._log_msg("WARNING", msg.format(possible[0]), level=2)
         file_path = possible[0]
         file_name = "{0}.pdf".format(self.inner_basename)
         self.files_to_archive[file_name] = file_path

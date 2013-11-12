@@ -45,27 +45,39 @@
   </xsl:template>
 
   <xsl:template match="Source">
-    <source><xsl:value-of select="."/></source>
+    <xsl:if test="text()[normalize-space()]">
+      <source><xsl:value-of select="."/></source>
+    </xsl:if>
   </xsl:template>
 
   <xsl:template match="Volume">
-    <volume><xsl:value-of select="."/></volume>
+    <xsl:if test="text()[normalize-space()]">
+      <volume><xsl:value-of select="."/></volume>
+    </xsl:if>
   </xsl:template>
 
   <xsl:template match="Issue">
-    <issue><xsl:value-of select="."/></issue>
+    <xsl:if test="text()[normalize-space()]">
+      <issue><xsl:value-of select="."/></issue>
+    </xsl:if>
   </xsl:template>
 
   <xsl:template match="ISSN">
-    <issn><xsl:value-of select="."/></issn>
+    <xsl:if test="text()[normalize-space()]">
+      <issn><xsl:value-of select="."/></issn>
+    </xsl:if>
   </xsl:template>
   
   <xsl:template match="Title">
-    <article-title><xsl:value-of select="."/></article-title>
+    <xsl:if test="text()[normalize-space()]">
+      <article-title><xsl:value-of select="."/></article-title>
+    </xsl:if>
   </xsl:template>
   
   <xsl:template match="Pages">
-    <page-range><xsl:value-of select="."/></page-range>
+    <xsl:if test="text()[normalize-space()]">
+      <page-range><xsl:value-of select="."/></page-range>
+    </xsl:if>
   </xsl:template>
 
   <xsl:template name="tokenizeString">

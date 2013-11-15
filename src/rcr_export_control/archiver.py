@@ -37,8 +37,8 @@ class JATSArchiver(object):
     base_filename = None
     inner_basename = None
     current_figure_images = []
+    current_caption_tags = []
     converted = False
-    skip_next_paragraph = False
     figure_list = []
     galley_storage = {}
     supplemental_storage = {}
@@ -220,49 +220,51 @@ class JATSArchiver(object):
         """walk the siblings after the section heading and insert p's"""
         for tag in header_tag.next_siblings:
             if isinstance(tag, element.Tag):
-                # allow sub-processes to short-circuit the paragraph that 
-                # follows them (helps in processing badly formatted figures)
-                if self.skip_next_paragraph and tag.name == 'p':
-                    self.skip_next_paragraph = False
-                    continue
                 self._log_msg(
                     "Investigating Tag", "{0}\n".format(tag), level=1
                 )
-                if 'class' in tag.attrs:
-                    comp = map(str.lower, tag['class'])
-                    if 'subheading' in comp:
-                        # stop when we reach the next subheading
-                        self._log_msg(
-                            "Ending section on new subheading",
-                            "{0}\n".format(tag),
-                            level=3
-                        )
-                        break
-                    elif 'figure' in comp:
+                comp = map(str.lower, tag.get('class', ['']))
+                if 'subheading' in comp:
+                    # stop when we reach the next subheading
+                    self._log_msg(
+                        "Ending section on new subheading",
+                        "{0}\n".format(tag),
+                        level=3
+                    )
+                    break
+                elif 'figure' in comp:
+                    # this is a figure.  Deal with it.
+                    f_node = etree.SubElement(sec_node, 'fig')
+                    self._process_figure(f_node, tag)
+                elif tag.name == 'p':
+                    # if the article has yet to be converted to using the
+                    # 'figure' class on figure paragraphs, try to catch
+                    # figures anyway.
+                    if tag.find(class_="figureCaption") is not None or tag.find('img') is not None:
                         # this is a figure.  Deal with it.
-                        f_node = etree.SubElement(sec_node, 'fig')
-                        self._process_figure(f_node, tag)
-                else:
-                    if tag.name == 'p':
-                        # if the article has yet to be converted to using the
-                        # 'figure' class on figure paragraphs, try to catch
-                        # figures anyway.
-                        if tag.find(class_="figureCaption") is not None or tag.find('img') is not None:
-                            # this is a figure.  Deal with it.
-                            if self.current_figure_node is None:
-                                self.current_figure_node = etree.SubElement(
-                                    sec_node, 'fig'
-                                )
-                            self._process_malformed_figure(tag)
-                        else:
-                            p_node = etree.SubElement(sec_node, 'p')
-                            self._process_paragraph(p_node, tag)
-                            p_node.tail = "\n"
-                    if tag.name in ['ul', 'ol']:
-                        l_node = etree.SubElement(sec_node, 'list')
-                        self._process_list(l_node, tag)
-                    # we will also need to special-case handling definition
-                    # lists here.  grrrr.
+                        if self.current_figure_node is None:
+                            self.current_figure_node = etree.SubElement(
+                                sec_node, 'fig'
+                            )
+                        self._process_malformed_figure(tag)
+                    elif 'figurecaption' in comp:
+                        if self.current_figure_node is None:
+                            self.current_figure_node = etree.SubElement(
+                                sec_node, 'fig'
+                            )
+                        self._process_malformed_figure(tag)
+                    else:
+                        p_node = etree.SubElement(sec_node, 'p')
+                        self._process_paragraph(p_node, tag)
+                        p_node.tail = "\n"
+                elif tag.name in ['ul', 'ol']:
+                    l_node = etree.SubElement(sec_node, 'list')
+                    self._process_list(l_node, tag)
+                elif tag.name == 'table':
+                    wrap_node = etree.SubElement(sec_node, 'table-wrap')
+                    self._insert_tag(wrap_node, tag)
+                # we will also need to special-case handling definition
+                # lists here.  grrrr.
 
             elif isinstance(tag, element.NavigableString):
                 # XXX Log navigable strings with non-whitespace in case we're
@@ -362,10 +364,18 @@ class JATSArchiver(object):
                 "{0}\n".format(" ".join(map(str, figure_images))),
                 level=1
             )
-        elif self.current_figure_images and\
-            f_tag.find(class_='figureCaption') is not None:
+        if f_tag.find(class_='figureCaption') is not None or\
+            'figureCaption' in f_tag.get('class', []):
             # this node is the caption, time to process it all
-            for caption_tag in f_tag.find_all('span', class_='figureCaption'):
+            if 'figureCaption' in f_tag.get('class', []) and f_tag.text:
+                self.current_caption_tags = [f_tag]
+            else:
+                self.current_caption_tags = f_tag.find_all(
+                    'span', class_='figureCaption'
+                )
+
+        if self.current_figure_images and self.current_caption_tags:
+            for caption_tag in self.current_caption_tags:
                 self._log_msg(
                     "Processing figure caption",
                     "{0}\n".format(caption_tag),
@@ -391,19 +401,20 @@ class JATSArchiver(object):
             # empty out the buffers we've stored for processing this figure
             self._log_msg("Figure processing complete", level=2)
             self._clear_stored_figure()
-        else:
-            header = "ERROR: there has been a problem processing the figure ",
-            header += "associated with this tag.  Please check your article ",
-            header += "source HTML."
-            self._log_msg(header, "{0}\n".format(f_tag))
-            # empty out the buffers we've stored for processing this figure
-            self._clear_stored_figure()
+        # else:
+        #     msg_head = "ERROR: there has been a problem processing the figure "
+        #     msg_head += "associated with this tag.  Please check your article "
+        #     msg_head += "source HTML."
+        #     self._log_msg(msg_head, "{0}\n".format(f_tag))
+        #     # empty out the buffers we've stored for processing this figure
+        #     self._clear_stored_figure()
 
 
     def _clear_stored_figure(self):
         """clear the storage used for iteratively processing figures"""
         self.current_figure_node = None
         self.current_figure_images = []
+        self.current_caption_tags = []
 
     def _insert_tag(self, node, tag, subnode_type=None):
         """insert a subnode based on node"""
@@ -525,12 +536,14 @@ class JATSArchiver(object):
                     "ERROR",
                     'Bad reference {0}, inserting placeholder'.format(idx + 1)
                 )
-                summaries = source.findall('.//DocumentSummary')
-                insert_after = summaries[idx - 1]
-                insert_after.addnext(etree.Element('DocumentSummary'))
-                new = insert_after.getnext()
+                container = source.find('.//DocumentSummarySet')
+                new = etree.Element('DocumentSummary')
                 new.append(etree.Element('error'))
                 new.attrib['uid'] = 'INSERTED_PLACEHOLDER'
+                # the DBBuild element is always element 0 in the list of 
+                # children, so in reality the index of summaries will be 
+                # 1-based.
+                container.insert(idx + 1, new)
             # check the resulting tree for error elements
             err_nodes = source.findall('.//error')
             for err_node in err_nodes:
@@ -663,6 +676,7 @@ class JATSArchiver(object):
                             msg += "figure references.  Please check the "
                             msg += "original html."
                             self._log_msg('ERROR', msg.format(match))
+                            fig_id = "placeholder"
                         # XXX: at this point, if as_text is false, then inserted
                         # should be generated as the next sibling of node, not as
                         # a sub-element
@@ -692,9 +706,9 @@ class JATSArchiver(object):
                         # head and match should both be part of the existing 
                         # inserted xref and the remainder should be treated
                         # as text for continuing processing.
-                        msg = "Unable to find a viable index in the string "
-                        msg += "{0}.  Please verify the linking of figures "
-                        msg += "in the output JATS xml."
+                        msg = "Unable to find a viable figure index in the "
+                        msg += "string {0}.  Please verify the linking of "
+                        msg += "figures in the output JATS xml."
                         self._log_msg('WARNING', msg.format(match))
                         if inserted is not None:
                             current_text = inserted.text or ''
@@ -723,6 +737,7 @@ class JATSArchiver(object):
                 "{0}\n".format(etree.tostring(figure)),
                 level=2
             )
+            self._validate_figure(figure)
             for graphic in figure.findall('graphic'):
                 filename = get_namespaced_attribute(
                     graphic, 'href', prefix='xlink'
@@ -758,6 +773,14 @@ class JATSArchiver(object):
                     msg = 'More than one possible file has been found for '
                     msg += 'figure graphic {0}'
                     self._log_msg("ERROR", msg.format(filename))
+
+
+    def _validate_figure(self, fig_node):
+        """report if a graphic is in a figure with a missing caption"""
+        if fig_node.find('caption') is None or\
+            fig_node.find('graphic') is None:
+            msg = "malformed figure:\n{0}".format(etree.tostring(fig_node))
+            self._log_msg("ERROR", msg)
 
 
     def _resolve_media_links(self):

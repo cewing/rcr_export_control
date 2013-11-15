@@ -74,7 +74,13 @@ HTML_TO_JATS_MAPPING = {
     'a': 'uri',
     'strong': 'bold',
     'br': None,
-    'li': 'p'
+    'li': 'p',
+    'table': 'table',
+    'caption': 'caption',
+    'tr': 'tr',
+    'th': 'th',
+    'tbody': 'tbody',
+    'thead': 'thead',
 }
 
 

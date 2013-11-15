@@ -8,11 +8,18 @@
         <ref>
           <xsl:attribute name="id"><xsl:value-of select="concat('ref-', position())"/></xsl:attribute>
           <label><xsl:value-of select="position()" /></label>
-          <element-citation>
-            <xsl:attribute name="publication-type"><xsl:value-of select="PubType/flag[1]" /></xsl:attribute>
-            
-            <xsl:apply-templates />
-          </element-citation>
+          <xsl:choose>
+            <xsl:when test="error">
+              <mixed-citation publication-type="ADD_APPROPRIATE_VALUE_HERE">REPLACE_ME_WITH_THE_REFERENCE_AS_SHOWN_IN_THE_SOURCE_HTML</mixed-citation>
+            </xsl:when>
+            <xsl:otherwise>
+              <element-citation>
+                <xsl:attribute name="publication-type"><xsl:value-of select="PubType/flag[1]" /></xsl:attribute>
+
+                <xsl:apply-templates />
+              </element-citation>
+            </xsl:otherwise>
+          </xsl:choose>
         </ref>
         </xsl:for-each>
       </ref-list>

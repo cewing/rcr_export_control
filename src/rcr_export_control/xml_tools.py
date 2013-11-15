@@ -182,7 +182,6 @@ def extract_reference_pmids(html):
     <br/>
     """
     pmids = []
-    current_pmid_count = 0
     pmid_candidate = [None]
     seeking_pmid = False
     ref_graphs = html.find_all('p', class_='references')
@@ -196,15 +195,15 @@ def extract_reference_pmids(html):
                 # an integer (this is definitely a reference)
                 match = REF_PAT.match(node.strip())
                 if match is not None:
-                    new_pmid_count = int(match.groups()[0])
-                    # have we reached a new reference?
-                    if new_pmid_count > current_pmid_count:
-                        if seeking_pmid:
-                            pmids.extend(pmid_candidate)
-                            pmid_candidate = [None]
-                        else:
-                            seeking_pmid = True
-                        current_pmid_count = new_pmid_count
+                    # new_pmid_count = int(match.groups()[0])
+                    # # have we reached a new reference?
+                    # if new_pmid_count > current_pmid_count:
+                    if seeking_pmid:
+                        pmids.extend(pmid_candidate)
+                        pmid_candidate = [None]
+                    else:
+                        seeking_pmid = True
+                    # current_pmid_count = new_pmid_count
             elif isinstance(node, element.Tag) and node.name == ('a'):
                 url = node.get('href')
                 if url is not None:

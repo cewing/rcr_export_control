@@ -278,3 +278,25 @@ def get_index_from_figure_ref(ref):
         return None
 
     return int(ref[match.start():match.end()]) - 1
+
+
+class DateParserXSLTExtension(etree.XSLTExtension):
+    """helper class for parsing sloppy dates incoming from pubmed"""
+
+    def execute(self, context, self_node, input_node, output_parent):
+        """some notes on what this does and how"""
+        date_input = input_node.text
+        date_parts = date_input.split(' ')
+        year_node = etree.Element('year')
+        year_node.text = date_parts[0]
+        output_parent.append(year_node)
+        if len(date_parts) > 1:
+            # the second part is always the month, if present
+            month_node = etree.Element('month')
+            month_node.text = date_parts[1]
+            output_parent.append(month_node)
+            if len(date_parts) > 2:
+                # the third part is the day
+                day_node = etree.Element('day')
+                day_node.text = date_parts[2]
+                output_parent.append(day_node)

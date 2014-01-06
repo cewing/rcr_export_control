@@ -1,5 +1,7 @@
 <xsl:stylesheet version="1.0"
-    xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+    xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+    xmlns:rcr="rcr_namespace"
+    extension-element-prefixes="rcr">
   <xsl:output omit-xml-declaration="yes" indent="yes" method="xml" encoding="utf-8"/>
   <xsl:template match="/eSummaryResult/DocumentSummarySet">
       <ref-list>
@@ -42,13 +44,7 @@
   </xsl:template>
 
   <xsl:template match="PubDate">
-    <xsl:call-template name="tokenizeString">
-      <xsl:with-param name="list" select="." />
-      <xsl:with-param name="delimiter" select="' '" />
-      <xsl:with-param name="firstTag" select="'year'" />
-      <xsl:with-param name="lastTag" select="'month'" />
-      <xsl:with-param name="firstValue" select="''" />
-    </xsl:call-template>
+    <rcr:parse-date></rcr:parse-date>
   </xsl:template>
 
   <xsl:template match="Source">

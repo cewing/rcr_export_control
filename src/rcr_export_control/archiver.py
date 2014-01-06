@@ -16,6 +16,7 @@ from rcr_export_control.xml_tools import is_media_url
 from rcr_export_control.xml_tools import parse_article_html
 from rcr_export_control.xml_tools import set_namespaced_attribute
 from rcr_export_control.xml_tools import set_sec_type
+from rcr_export_control.xml_tools import DateParserXSLTExtension
 from textwrap import TextWrapper
 
 import os
@@ -94,7 +95,11 @@ class JATSArchiver(object):
         if not hasattr(self, '_transform'):
             transform_path = os.path.join(HOME, 'pubmed_jats_transform.xsl')
             with open(transform_path) as fh:
-                self._transform = etree.XSLT(etree.XML(fh.read()))
+                date_parser = DateParserXSLTExtension()
+                extensions = { ('rcr_namespace', 'parse-date'): date_parser, }
+                self._transform = etree.XSLT(
+                    etree.XML(fh.read()), extensions=extensions
+                )
         return self._transform
 
     # Public API
